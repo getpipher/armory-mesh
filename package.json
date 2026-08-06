@@ -1,0 +1,61 @@
+{
+  "name": "@getpipher/armory-mesh",
+  "version": "0.0.0-scaffold",
+  "description": "Hardened peer-to-peer mesh for pi agents — the in-house answer to disler's coms. N-peer mesh with unified transport, liveness + auto-eviction, built-in auth, typed messages + channels, optional persistence + late-joiner replay, and fleet-state primitives (claim_target / bank_finding / dup_check / handoff). Loaded as a pi extension.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "peer-to-peer",
+    "mesh",
+    "cross-session",
+    "fleet",
+    "comms",
+    "awareness",
+    "bug-bounty"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "author": "RECTOR (https://github.com/rz1989s)",
+  "homepage": "https://github.com/getpipher/armory-mesh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getpipher/armory-mesh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/getpipher/armory-mesh/issues"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "extensions",
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "DESIGN.md",
+    "ROADMAP.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "scripts": {
+    "test": "echo \"no tests yet (scaffold)\" && exit 0",
+    "build": "echo \"no build step (TypeScript source loaded directly by pi)\" && exit 0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "typebox": { "optional": true }
+  }
+}
