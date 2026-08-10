@@ -45,8 +45,12 @@
     ]
   },
   "scripts": {
-    "test": "echo \"no tests yet (scaffold)\" && exit 0",
+    "test": "pnpm test:smoke",
+    "test:smoke": "jiti scripts/smoke-phase1.ts",
     "build": "echo \"no build step (TypeScript source loaded directly by pi)\" && exit 0"
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -54,8 +58,17 @@
     "@sinclair/typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": true },
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@sinclair/typebox": { "optional": true }
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@sinclair/typebox": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0"
   }
 }

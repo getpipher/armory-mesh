@@ -18,16 +18,21 @@
 - [x] `ROADMAP.md` (this file) + `README.md` + `AGENTS.md`.
 - [x] `extensions/mesh.ts` + `src/` stubs (the tool signatures + module boundaries, TODO-marked).
 
-### Phase 1 — coms parity (local transport + the 4 core tools) 🚧
+### Phase 1 — coms parity (local transport + the 4 core tools) ✅ (2026-08-10)
 **Goal:** match coms's core capability, local-only, hardened baseline.
-- [ ] `src/paths.ts` — the `~/.pi/mesh/<project>/` layout (sockets/, agents/, logs/, key, allowlist).
-- [ ] `src/transport.ts` — local Unix-socket transport (listen + connect + send/recv + framing + the 256KB cap).
-- [ ] `src/registry.ts` — file registry (`agents/<id>.json`), join/leave, `mesh_list`.
-- [ ] `src/auth.ts` — project key + HMAC sign/verify + nonce replay protection + allowlist.
-- [ ] `src/mesh.ts` — the core: wire the transport + registry + auth into the 4 tools (`mesh_list` / `mesh_send` / `mesh_get` / `mesh_await`).
-- [ ] `extensions/mesh.ts` — the pi extension entry: register the tools with the pi tool registry (match the coms/pi extension pattern).
-- [ ] **Smoke test:** two `pi -e extensions/mesh.ts` sessions, same machine → `mesh_list` sees both → `mesh_send` round-trips → a killed session is evicted (liveness).
-- [ ] Dogfood pass 1: confirm the 4 tools work for 2 parallel pi sessions.
+- [x] `src/paths.ts` — the `~/.pi/mesh/<project>/` layout (sockets/, agents/, logs/, key, allowlist).
+- [x] `src/transport.ts` — local Unix-socket transport (listen + connect + 4-byte length-prefixed JSON framing + the 256KB cap; Windows named pipe).
+- [x] `src/registry.ts` — file registry (`agents/<id>.json`), join/leave/heartbeat, `refreshPool` with liveness eviction.
+- [x] `src/auth.ts` — project key (race-safe O_EXCL gen) + HMAC-SHA256 sign/verify + `NonceWindow` replay protection + opt-in allowlist.
+- [x] `src/mesh.ts` — `MeshCore` wires transport + registry + auth into the 4 tools (`mesh_list` / `mesh_send` / `mesh_get` / `mesh_await`); tool descriptors corrected to the real `ToolDefinition` contract (`label` + `execute`).
+- [x] `extensions/mesh.ts` — `session_start` → `MeshCore.start`; `session_shutdown`/`SIGINT`/`SIGTERM` → graceful `stop` (release registry + close socket).
+- [x] **Smoke test:** `scripts/smoke-phase1.ts` (run via `pnpm test:smoke`) — fake-pi harness (11 tools register) + in-process two-core integration over real sockets (discovery, signed round-trip, tampered drop, crash→eviction). Also confirmed end-to-end through two real `pi -e` sessions (alpha↔beta discovery).
+- [x] Dogfood pass 1 gate: the 4 tools work for 2 parallel pi sessions (verified).
+
+**Phase 1 decisions (deviations from the scaffold, documented for Phase 7 hardening):**
+- Allowlist is **opt-in**: if `allowlist.json` is absent → key-only mode (the project key is the gate); if present → enforced. The key (shared per-project) is the primary auth — a rogue without it can't produce verifiable messages. Phase 7 revisits allowlist bootstrap.
+- The scaffold's tool descriptors used `run` (not the real `execute`) and lacked `label` — they registered but would have thrown at call time. Corrected to the `ToolDefinition` contract.
+- Eviction is passive-on-read (`refreshPool`) + self-heartbeat (`setInterval` writing `lastSeen`). The live socket-level ping + pool widget are Phase 2.
 
 ### Phase 2 — liveness + auto-eviction + the live pool widget 🚧
 - [ ] Heartbeat loop (`PI_MESH_PING_MS` default 2000) + eviction (`PI_MESH_EVICTION_MISSES` default 5).
@@ -79,7 +84,7 @@
 | Phase | Status | Dogfooded? |
 |---|---|---|
 | 0 scaffold | ✅ done (this session) | n/a |
-| 1 coms parity (local + 4 tools) | 🚧 next | after the smoke test |
+| 1 coms parity (local + 4 tools) | ✅ done (2026-08-10) | smoke test passed; real 2-session run |
 | 2 liveness + widget | 🚧 | — |
 | 3 typed messages + channels | 🚧 | — |
 | 4 persistence + replay | 🚧 | — |

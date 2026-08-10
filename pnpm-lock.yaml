@@ -17,6 +17,10 @@ importers:
       '@sinclair/typebox':
         specifier: '*'
         version: 0.34.52
+    devDependencies:
+      jiti:
+        specifier: ^2.7.0
+        version: 2.7.0
 
 packages:
 
