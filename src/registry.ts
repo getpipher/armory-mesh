@@ -17,7 +17,7 @@ export interface Registry {
   list(): Promise<Peer[]>; // all registered peers (raw read; no eviction)
   refreshPool(): Promise<Peer[]>; // re-read + evict stale; live peers only (alive === true)
   heartbeat(): Promise<void>; // rewrite self's file with lastSeen=now
-  updateContext(usage: number): Promise<void>; // broadcast own context-window usage (Phase 2)
+  updateContext(usage: number | undefined): Promise<void>; // broadcast own context-window usage (Phase 2)
   updateClaim(target: string | undefined): Promise<void>; // the claimed-target field (Phase 5)
   selfId: string;
 }
@@ -112,7 +112,7 @@ export function createRegistry(opts: { project: string; agentId: string; pingMs:
     await writeSelf({}); // bumps lastSeen only
   }
 
-  async function updateContext(usage: number): Promise<void> {
+  async function updateContext(usage: number | undefined): Promise<void> {
     await writeSelf({ contextUsage: usage });
   }
 

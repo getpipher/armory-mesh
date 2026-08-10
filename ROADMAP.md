@@ -34,11 +34,15 @@
 - The scaffold's tool descriptors used `run` (not the real `execute`) and lacked `label` — they registered but would have thrown at call time. Corrected to the `ToolDefinition` contract.
 - Eviction is passive-on-read (`refreshPool`) + self-heartbeat (`setInterval` writing `lastSeen`). The live socket-level ping + pool widget are Phase 2.
 
-### Phase 2 — liveness + auto-eviction + the live pool widget 🚧
-- [ ] Heartbeat loop (`PI_MESH_PING_MS` default 2000) + eviction (`PI_MESH_EVICTION_MISSES` default 5).
-- [ ] Context-window-usage broadcast (port coms's approach to reading own context usage).
-- [ ] The live pool widget (above the editor): peers + context usage + last-seen, refreshing on heartbeat.
-- [ ] Stale-registry cleanup on crash (the coms gap closed).
+### Phase 2 — liveness + auto-eviction + the live pool widget ✅ (2026-08-10)
+**Goal:** live liveness (heartbeats) + context-window-usage broadcast + the pool widget.
+- [x] Heartbeat loop (`PI_MESH_PING_MS` default 2000) + eviction (`PI_MESH_EVICTION_MISSES` default 5).
+- [x] Context-window-usage broadcast (signed `heartbeat` message on `#heartbeats` carrying the agent card; the extension wires `getCtxUsage` to `ctx.getContextUsage()`).
+- [x] The live pool widget (below the editor): peers + context usage + claimed-target + last-seen, re-rendered on peer-set change. Defensive `theme.fg` (the getpipher EditorTheme/Theme gotcha).
+- [x] Stale-registry cleanup on crash: self-heal (the heartbeat rewrites self's registry file — `writeFile` recreates it if unlinked under us) + Phase-1 `refreshPool` eviction + gossip eviction of silent live cards.
+- [x] Smoke tests: `scripts/smoke-phase2.ts` (heartbeat ctx broadcast, gossip eviction, `mesh_list` live view) + `scripts/smoke-phase2-widget.ts` (real `session_start` → `installPoolWidget` → `setWidget` factory → `render` path, no throw).
+
+**Phase 2 design:** liveness is **gossip via signed heartbeat messages** (not socket ping/pong) — reuses the auth + transport, no new round-trip method. Two aligned eviction layers: the registry (file `lastSeen`, Phase 1) + the in-memory `liveCards` (gossip, Phase 2). `mesh_list`/`snapshotPeers` return the merged live view. The pool widget's `render` is synchronous + defensive (no theme API that could throw + crash the TUI, per the cursor gotcha).
 
 ### Phase 3 — typed messages + channels 🚧
 - [ ] `src/channels.ts` — channel registry, subscribe/unsubscribe, per-channel routing.
@@ -85,7 +89,7 @@
 |---|---|---|
 | 0 scaffold | ✅ done (this session) | n/a |
 | 1 coms parity (local + 4 tools) | ✅ done (2026-08-10) | smoke test passed; real 2-session run |
-| 2 liveness + widget | 🚧 | — |
+| 2 liveness + widget | ✅ done (2026-08-10) | smoke2 + widget smoke passed |
 | 3 typed messages + channels | 🚧 | — |
 | 4 persistence + replay | 🚧 | — |
 | 5 fleet-state primitives | 🚧 | — |

@@ -54,9 +54,20 @@ export default function meshExtension(pi: ExtensionAPI): void {
       lastSeen: Date.now(),
       alive: true,
     };
-    core = await createMeshCore({ config, self });
+    core = await createMeshCore({
+      config,
+      self,
+      getCtxUsage: () => {
+        const pct = ctx.getContextUsage()?.percent;
+        return pct === null ? undefined : pct;
+      },
+    });
     await core.start();
     setMesh(core);
+    // Phase 2: the live pool widget (below the editor). Re-install on peer-set change so the TUI
+    // re-renders with fresh context usage + liveness.
+    core.onPeersChanged = () => installPoolWidget(ctx, core);
+    installPoolWidget(ctx, core);
     try {
       ctx.ui?.notify?.(`📡 mesh: joined "${config.project}" as ${config.agentName} (${agentId.slice(0, 8)})`, "info");
     } catch {
@@ -97,8 +108,47 @@ export default function meshExtension(pi: ExtensionAPI): void {
   process.on("SIGINT", hardStop);
   process.on("SIGTERM", hardStop);
   process.on("beforeExit", hardStop);
+}
 
-  // TODO(Phase 2): install the live pool widget (peers + context usage + claimed targets),
-  //   refreshing on heartbeat. Model on coms's installPoolWidget (uses @earendil-works/pi-tui).
-  // TODO(Phase 2): start the heartbeat loop (PI_MESH_PING_MS) + liveness eviction (socket-level ping).
+// ─── Phase 2: the live pool widget (below the editor) ───────────────────────
+
+/** Install/refresh the mesh-pool widget: peers + live context-window usage + claimed target +
+ *  last-seen. Re-installed on each peer-set change (the heartbeat's onPeersChanged) so the TUI
+ *  re-renders with fresh liveness + context usage. */
+function installPoolWidget(ctx: ExtensionContext, core: MeshCore): void {
+  if (!ctx.hasUI) return;
+  try {
+    ctx.ui.setWidget(
+      "mesh-pool",
+      (_tui, theme) => ({
+        invalidate() {},
+        render(width: number): string[] {
+          return renderMeshPool(width, theme, core);
+        },
+      }),
+      { placement: "belowEditor" },
+    );
+  } catch {
+    // non-fatal (some modes have no widget surface)
+  }
+}
+
+export function renderMeshPool(width: number, theme: unknown, core: MeshCore): string[] {
+  const fg = (role: string, text: string): string => {
+    const t = theme as { fg?: (role: string, text: string) => string } | undefined;
+    return typeof t?.fg === "function" ? t.fg(role, text) : text;
+  };
+  void width;
+  const peers = core.snapshotPeers();
+  const header = `mesh ${core.config.project} · ${peers.length} peer${peers.length === 1 ? "" : "s"}`;
+  if (peers.length === 0) return [fg("dim", `${header} — solo` )];
+  const lines = [fg("accent", header)];
+  const now = Date.now();
+  for (const p of peers) {
+    const ctxPct = p.contextUsage != null ? `${Math.round(p.contextUsage)}%` : "--";
+    const claim = p.claimedTarget ? ` ⟨${p.claimedTarget}⟩` : "";
+    const ago = Math.max(0, Math.round((now - (p.lastSeen ?? now)) / 1000));
+    lines.push(fg("dim", `  ${p.name}  ${p.model}  ctx:${ctxPct}${claim}  ${ago}s`));
+  }
+  return lines;
 }

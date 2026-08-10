@@ -45,8 +45,10 @@
     ]
   },
   "scripts": {
-    "test": "pnpm test:smoke",
+    "test": "pnpm test:smoke && pnpm test:smoke2 && pnpm test:smoke2-widget",
     "test:smoke": "jiti scripts/smoke-phase1.ts",
+    "test:smoke2": "jiti scripts/smoke-phase2.ts",
+    "test:smoke2-widget": "jiti scripts/smoke-phase2-widget.ts",
     "build": "echo \"no build step (TypeScript source loaded directly by pi)\" && exit 0"
   },
   "devDependencies": {

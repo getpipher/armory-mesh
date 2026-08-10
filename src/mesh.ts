@@ -32,6 +32,10 @@ export interface MeshCore {
    *  the liveness/eviction guarantee is testable. Production shutdown is `stop()` (graceful leave). */
   crash(): Promise<void>;
   list(): Promise<Peer[]>;
+  /** Synchronous snapshot of the live peer view (for the pool widget's render). */
+  snapshotPeers(): Peer[];
+  /** Set by the extension to re-render the pool widget when the live peer set changes. */
+  onPeersChanged: ((peers: Peer[]) => void) | null;
   send(args: { target?: string; channel?: string; type?: MsgType; payload: unknown }): Promise<string>;
   get(args: { channel?: string; type?: MsgType; since?: number }): Promise<MeshMsg[]>;
   awaitMsg(args: { channel?: string; type?: MsgType; from?: string; timeoutMs?: number }): Promise<MeshMsg | undefined>;
@@ -56,8 +60,11 @@ function textResult(text: string) {
 export async function createMeshCore(opts: {
   config: MeshConfig;
   self: Peer;
+  /** Live context-window usage reader (the extension wires this to ctx.getContextUsage). */
+  getCtxUsage?: () => number | undefined;
 }): Promise<MeshCore> {
   const { config, self } = opts;
+  const getCtxUsage = opts.getCtxUsage ?? (() => undefined);
   const auth: Auth = createAuth({ project: config.project, selfId: self.id });
   const registry: Registry = createRegistry({
     project: config.project,
@@ -68,6 +75,19 @@ export async function createMeshCore(opts: {
   let transport: Transport;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   const inbound: MeshMsg[] = [];
+
+  /** Live peer cards from received heartbeats (the awareness/liveness view for the widget + mesh_list). */
+  interface HeartbeatCard {
+    id: string;
+    name: string;
+    model: string;
+    host: string;
+    contextUsage?: number;
+    claimedTarget?: string;
+  }
+  const liveCards = new Map<string, { card: HeartbeatCard; lastSeen: number }>();
+  let onPeersChanged: ((peers: Peer[]) => void) | null = null;
+  let lastNotifiedSig = "";
 
   // resolveSocket / allPeerSockets feed the transport from the live registry.
   function resolveSocket(id: string): string | undefined {
@@ -107,10 +127,18 @@ export async function createMeshCore(opts: {
   });
 
   function handleFrame(frame: Frame, _fromSocket: string): void {
-    if (frame.kind !== "msg" || !frame.msg) return; // Phase 1 handles 'msg' only
+    if (frame.kind !== "msg" || !frame.msg) return; // Phase 1/2 handle 'msg' only
     const msg = frame.msg;
     // Auth-by-default: verify signature + nonce. A tampered/unsigned/replayed frame is DROPPED.
     if (!auth.verify(msg)) return;
+    // Heartbeats update the live peer view (liveness + context-usage broadcast) and are NOT queued.
+    if (msg.type === "heartbeat") {
+      const card = msg.payload as HeartbeatCard | undefined;
+      if (card && typeof card.id === "string" && card.id !== self.id) {
+        liveCards.set(card.id, { card, lastSeen: Date.now() });
+      }
+      return;
+    }
     inbound.push(msg);
     // Cap the inbound queue so a noisy peer can't OOM us (Phase 7 tightens rate caps).
     if (inbound.length > 4096) inbound.splice(0, inbound.length - 4096);
@@ -129,10 +157,46 @@ export async function createMeshCore(opts: {
     await registry.join(self);
     await refreshCachedPeers();
     await transport.start();
-    // Heartbeat: touch self's registry file every pingMs so live peers can evict us on crash.
-    heartbeatTimer = setInterval(() => {
-      registry.heartbeat().catch(() => {});
-      refreshCachedPeers().catch(() => {});
+    // Heartbeat loop (Phase 2): every pingMs —
+    //   1. self-heal + write self's registry file with live lastSeen + contextUsage
+    //   2. broadcast a SIGNED 'heartbeat' message on #heartbeats (the context-usage + liveness broadcast)
+    //   3. evict live cards we haven't heard from in evictionMisses * pingMs (gossip liveness)
+    //   4. notify the extension (→ pool widget re-render) when the live peer set changes
+    heartbeatTimer = setInterval(async () => {
+      try {
+        await registry.updateContext(getCtxUsage() ?? undefined); // bumps lastSeen + writes contextUsage (self-heal)
+      } catch {
+        // best-effort
+      }
+      const card: HeartbeatCard = {
+        id: self.id,
+        name: self.name,
+        model: self.model,
+        host: self.host,
+        contextUsage: getCtxUsage(),
+        claimedTarget: self.claimedTarget,
+      };
+      await send({ channel: "#heartbeats", type: "heartbeat", payload: card }).catch(() => {});
+      // Gossip eviction: drop silent live cards.
+      const now = Date.now();
+      const staleAfterMs = config.pingMs * config.evictionMisses;
+      let changed = false;
+      for (const [id, live] of liveCards) {
+        if (id === self.id) continue;
+        if (now - live.lastSeen > staleAfterMs) {
+          liveCards.delete(id);
+          changed = true;
+        }
+      }
+      await refreshCachedPeers().catch(() => {});
+      if (changed) {
+        const peers = livePeers();
+        const sig = peers.map((p) => `${p.id}:${p.lastSeen ?? 0}:${p.contextUsage ?? "-"}`).join("|");
+        if (sig !== lastNotifiedSig && onPeersChanged) {
+          lastNotifiedSig = sig;
+          try { onPeersChanged(peers); } catch { /* best-effort */ }
+        }
+      }
     }, config.pingMs);
     heartbeatTimer.unref?.();
   }
@@ -142,6 +206,7 @@ export async function createMeshCore(opts: {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    onPeersChanged = null;
     await transport.stop().catch(() => {});
     await registry.leave().catch(() => {});
   }
@@ -156,9 +221,50 @@ export async function createMeshCore(opts: {
     // file that the liveness eviction (refreshPool) must clean up.
   }
 
+  /** The live peer view: registry discovery (hard eviction by lastSeen) merged with live heartbeat
+   *  cards (fresh context usage + name/model/claim). Excludes self. */
+  function livePeers(): Peer[] {
+    const merged = new Map<string, Peer>();
+    for (const p of cachedPeers) {
+      if (p.id === self.id || p.alive === false) continue;
+      merged.set(p.id, { ...p });
+    }
+    for (const [id, live] of liveCards) {
+      if (id === self.id) continue;
+      const existing = merged.get(id);
+      const card = live.card;
+      const view: Peer = existing
+        ? {
+            ...existing,
+            name: card.name ?? existing.name,
+            model: card.model ?? existing.model,
+            contextUsage: card.contextUsage ?? existing.contextUsage,
+            claimedTarget: card.claimedTarget ?? existing.claimedTarget,
+            lastSeen: live.lastSeen,
+          }
+        : {
+            id,
+            name: card.name ?? "unknown",
+            model: card.model ?? "unknown",
+            host: card.host ?? "",
+            socketPath: undefined,
+            contextUsage: card.contextUsage,
+            claimedTarget: card.claimedTarget,
+            lastSeen: live.lastSeen,
+            alive: true,
+          };
+      merged.set(id, view);
+    }
+    return [...merged.values()];
+  }
+
+  function snapshotPeers(): Peer[] {
+    return livePeers();
+  }
+
   async function list(): Promise<Peer[]> {
     await refreshCachedPeers();
-    return cachedPeers.filter((p) => p.id !== self.id && p.alive !== false);
+    return livePeers();
   }
 
   async function send(args: { target?: string; channel?: string; type?: MsgType; payload: unknown }): Promise<string> {
@@ -238,6 +344,13 @@ export async function createMeshCore(opts: {
     stop,
     crash,
     list,
+    snapshotPeers,
+    get onPeersChanged() {
+      return onPeersChanged;
+    },
+    set onPeersChanged(v: ((peers: Peer[]) => void) | null) {
+      onPeersChanged = v;
+    },
     send,
     get,
     awaitMsg,
