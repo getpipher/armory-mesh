@@ -10,6 +10,7 @@ export interface Peer {
   socketPath?: string;   // local Unix socket (local mode)
   contextUsage?: number; // 0..1 — live context-window usage (the awareness signal)
   claimedTarget?: string; // the hunt target this session claimed, if any
+  channels?: string[];  // channels this peer is subscribed to (Phase 3 routing)
   lastSeen: number;      // epoch ms of last heartbeat
   alive: boolean;        // liveness (false => pending eviction)
 }

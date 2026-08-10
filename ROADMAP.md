@@ -44,11 +44,16 @@
 
 **Phase 2 design:** liveness is **gossip via signed heartbeat messages** (not socket ping/pong) — reuses the auth + transport, no new round-trip method. Two aligned eviction layers: the registry (file `lastSeen`, Phase 1) + the in-memory `liveCards` (gossip, Phase 2). `mesh_list`/`snapshotPeers` return the merged live view. The pool widget's `render` is synchronous + defensive (no theme API that could throw + crash the TUI, per the cursor gotcha).
 
-### Phase 3 — typed messages + channels 🚧
-- [ ] `src/channels.ts` — channel registry, subscribe/unsubscribe, per-channel routing.
-- [ ] The typed `MsgType` enum + validation (`heartbeat` / `claim` / `release` / `finding` / `dup_check` / `dup_check_result` / `scope` / `learning` / `handoff` / `text`).
-- [ ] `mesh_send(channel=..., type=...)`, `mesh_get(channel=, type=)`, `mesh_await(predicate)`.
-- [ ] Default channels per project (`#general`, `#dup-check`, `#learnings`, `#handoff`, `#heartbeats`) + on-demand per-target channels (`#gmtrade`).
+### Phase 3 — typed messages + channels ✅ (2026-08-10)
+**Goal:** scope comms by channel + enforce typed message payloads.
+- [x] `src/channels.ts` — channel registry (self subscriptions), default channels, valid channel names, per-type payload validation, subscriber-based routing.
+- [x] The typed `MsgType` validation (`heartbeat` / `claim` / `release` / `finding` / `dup_check` / `dup_check_result` / `scope` / `learning` / `handoff` / `text`); `text` + `heartbeat` are free-form.
+- [x] `mesh_send(channel=, type=...)` validates the payload + routes to channel subscribers; `mesh_get(channel=, type=)`, `mesh_await(predicate)` filter by channel/type.
+- [x] Default channels per project (`#general`, `#dup-check`, `#learnings`, `#handoff`, `#heartbeats`) joined on start; per-target channels (`#gmtrade`) via `subscribe()` (Phase 5 claim_target uses it; auto-join on send).
+- [x] `mesh_channels` tool implemented (channels + live subscriber counts + persist flag).
+- [x] Smoke test: `scripts/smoke-phase3.ts` (3 peers) — default broadcast, per-target subscriber-only routing (a non-subscriber doesn't receive), typed validation (valid + invalid), mesh_channels, mesh_await filter.
+
+**Phase 3 design:** channels are subscription-scoped (not just filter tags). Self subscriptions are gossiped via the heartbeat card's `channels` field, so a sender routes a per-target message only to known subscribers (a small fleet doesn't spam uninterested peers). Default channels = everyone subscribed → broadcast-all (same as Phase 1/2). Subscription propagation latency is ≤ pingMs (gossip); Phase 7 may add an immediate subscribe-broadcast.
 
 ### Phase 4 — persistence + late-joiner replay (the durable ledger) 🚧
 - [ ] `src/persistence.ts` — optional per-channel ndjson log (`logs/<channel>.ndjson`), rotated by size.
@@ -90,7 +95,7 @@
 | 0 scaffold | ✅ done (this session) | n/a |
 | 1 coms parity (local + 4 tools) | ✅ done (2026-08-10) | smoke test passed; real 2-session run |
 | 2 liveness + widget | ✅ done (2026-08-10) | smoke2 + widget smoke passed |
-| 3 typed messages + channels | 🚧 | — |
+| 3 typed messages + channels | ✅ done (2026-08-10) | smoke3 passed |
 | 4 persistence + replay | 🚧 | — |
 | 5 fleet-state primitives | 🚧 | — |
 | 6 remote hub + unified transport | 🚧 | — |

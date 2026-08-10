@@ -18,6 +18,7 @@ import { createLocalTransport } from "./transport.js";
 import type { Frame, Transport } from "./types.js";
 import { paths } from "./paths.js";
 import type { MeshConfig } from "./config.js";
+import { DEFAULT_CHANNELS, createChannelRegistry, isDefaultChannel, isValidChannelName, routeTargets, validateType, type ChannelRegistry } from "./channels.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 
@@ -36,6 +37,11 @@ export interface MeshCore {
   snapshotPeers(): Peer[];
   /** Set by the extension to re-render the pool widget when the live peer set changes. */
   onPeersChanged: ((peers: Peer[]) => void) | null;
+  /** Join/leave a channel (self subscription; Phase 5 claim_target + tests use this). */
+  subscribe(channel: string): void;
+  unsubscribe(channel: string): void;
+  /** List channels + live subscriber counts (+ whether they persist — Phase 4). */
+  channelsView(): Channel[];
   send(args: { target?: string; channel?: string; type?: MsgType; payload: unknown }): Promise<string>;
   get(args: { channel?: string; type?: MsgType; since?: number }): Promise<MeshMsg[]>;
   awaitMsg(args: { channel?: string; type?: MsgType; from?: string; timeoutMs?: number }): Promise<MeshMsg | undefined>;
@@ -84,10 +90,12 @@ export async function createMeshCore(opts: {
     host: string;
     contextUsage?: number;
     claimedTarget?: string;
+    channels?: string[];
   }
   const liveCards = new Map<string, { card: HeartbeatCard; lastSeen: number }>();
   let onPeersChanged: ((peers: Peer[]) => void) | null = null;
   let lastNotifiedSig = "";
+  const myChannels: ChannelRegistry = createChannelRegistry({ initial: [...DEFAULT_CHANNELS] });
 
   // resolveSocket / allPeerSockets feed the transport from the live registry.
   function resolveSocket(id: string): string | undefined {
@@ -164,7 +172,8 @@ export async function createMeshCore(opts: {
     //   4. notify the extension (→ pool widget re-render) when the live peer set changes
     heartbeatTimer = setInterval(async () => {
       try {
-        await registry.updateContext(getCtxUsage() ?? undefined); // bumps lastSeen + writes contextUsage (self-heal)
+        // self-heal + write live lastSeen + contextUsage + channels (one write).
+        await registry.updateSelf({ contextUsage: getCtxUsage() ?? undefined, channels: myChannels.list() });
       } catch {
         // best-effort
       }
@@ -175,6 +184,7 @@ export async function createMeshCore(opts: {
         host: self.host,
         contextUsage: getCtxUsage(),
         claimedTarget: self.claimedTarget,
+        channels: myChannels.list(),
       };
       await send({ channel: "#heartbeats", type: "heartbeat", payload: card }).catch(() => {});
       // Gossip eviction: drop silent live cards.
@@ -240,6 +250,7 @@ export async function createMeshCore(opts: {
             model: card.model ?? existing.model,
             contextUsage: card.contextUsage ?? existing.contextUsage,
             claimedTarget: card.claimedTarget ?? existing.claimedTarget,
+            channels: card.channels ?? existing.channels,
             lastSeen: live.lastSeen,
           }
         : {
@@ -250,6 +261,7 @@ export async function createMeshCore(opts: {
             socketPath: undefined,
             contextUsage: card.contextUsage,
             claimedTarget: card.claimedTarget,
+            channels: card.channels,
             lastSeen: live.lastSeen,
             alive: true,
           };
@@ -268,12 +280,24 @@ export async function createMeshCore(opts: {
   }
 
   async function send(args: { target?: string; channel?: string; type?: MsgType; payload: unknown }): Promise<string> {
+    const type = args.type ?? "text";
+    // Phase 3: validate the payload against the message type (typed messages).
+    const errors = validateType(type, args.payload);
+    if (errors.length > 0) {
+      throw new Error("mesh_send: invalid payload for type " + JSON.stringify(type) + ": " + errors.join("; "));
+    }
+    const channel = args.channel ?? "#general";
+    if (!isValidChannelName(channel)) {
+      throw new Error("mesh_send: invalid channel name " + JSON.stringify(channel) + " (must start with '#', no spaces)");
+    }
+    // Auto-join the channel we send on (so future heartbeats advertise the subscription).
+    myChannels.join(channel);
     const msg: MeshMsg = {
       id: crypto.randomUUID(),
       from: self.id,
       to: args.target,
-      channel: args.channel,
-      type: args.type ?? "text",
+      channel,
+      type,
       payload: args.payload,
       nonce: nextNonce(),
       sig: "", // filled after signing
@@ -284,9 +308,43 @@ export async function createMeshCore(opts: {
     if (args.target) {
       await transport.send(args.target, frame);
     } else {
-      await transport.broadcast(args.channel ?? "#general", frame);
+      // Phase 3 routing: deliver only to peers subscribed to the channel.
+      //   - default channels → all live peers (everyone is subscribed)
+      //   - per-target channels → only known subscribers (gossiped via heartbeats / registry)
+      const targets = routeTargets(channel, livePeers(), self.id);
+      await Promise.allSettled(targets.map((id) => transport.send(id, frame)));
     }
     return msg.id;
+  }
+
+  function subscribe(channel: string): void {
+    myChannels.join(channel);
+    registry.updateSelf({ channels: myChannels.list() }).catch(() => {});
+  }
+
+  function unsubscribe(channel: string): void {
+    if (isDefaultChannel(channel)) return; // defaults can't be left
+    myChannels.leave(channel);
+    registry.updateSelf({ channels: myChannels.list() }).catch(() => {});
+  }
+
+  function channelsView(): Channel[] {
+    const counts = new Map<string, number>();
+    for (const p of livePeers()) {
+      for (const c of p.channels ?? []) counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    const selfChannels = myChannels.list();
+    const seen = new Set<string>();
+    const out: Channel[] = [];
+    for (const c of selfChannels) {
+      seen.add(c);
+      out.push({ name: c, subscribers: 1 + (counts.get(c) ?? 0), persisted: config.persistChannels.includes(c) });
+    }
+    for (const [c, n] of counts) {
+      if (seen.has(c)) continue;
+      out.push({ name: c, subscribers: n, persisted: config.persistChannels.includes(c) });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   function matches(msg: MeshMsg, f: { channel?: string; type?: MsgType; from?: string }): boolean {
@@ -345,6 +403,9 @@ export async function createMeshCore(opts: {
     crash,
     list,
     snapshotPeers,
+    subscribe,
+    unsubscribe,
+    channelsView,
     get onPeersChanged() {
       return onPeersChanged;
     },
@@ -531,8 +592,9 @@ export const meshChannels = {
   label: "Mesh: channels",
   description: "List channels + their live subscriber counts + whether they persist to disk.",
   parameters: Type.Object({}),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_channels: not implemented (Phase 3)");
+  async execute(_toolCallId: string, _args: Record<string, never>, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    return textResult(JSON.stringify(core.channelsView(), null, 2));
   },
 };
 

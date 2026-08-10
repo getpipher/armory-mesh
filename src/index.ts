@@ -6,5 +6,6 @@
 
 export * from "./mesh.js";
 export * from "./types.js";
+export * from "./channels.js";
 export { paths, projectDir } from "./paths.js";
 export { defaultMeshConfig, type MeshConfig } from "./config.js";
