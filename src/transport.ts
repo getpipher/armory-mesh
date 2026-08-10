@@ -14,7 +14,11 @@
 
 import net from "node:net";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import type { Transport, Frame } from "./types.js";
+import type { Peer } from "./index.js";
+import type { Registry } from "./registry.js";
 import { paths } from "./paths.js";
 
 const ACK_TIMEOUT_MS = 5000;
@@ -304,12 +308,102 @@ export function sendRawFrame(endpointPath: string, frame: Frame, maxBytes: numbe
 }
 
 /**
- * Phase 6: the remote hub transport. Connects to PI_MESH_HUB_URL (HTTP+SSE);
- * messages relay through the hub. Requires PI_MESH_AUTH_TOKEN for LAN.
+ * Phase 6: the remote hub transport. Connects to PI_MESH_HUB_URL over SSE (inbound frames + peer
+ * events) + HTTP POST (outbound join/leave/heartbeat/send). Implements BOTH Transport + Registry —
+ * in hub mode the MeshCore uses one HubTransport object for both (the hub holds the live registry;
+ * there's no local file registry). Requires PI_MESH_AUTH_TOKEN for LAN (auth-by-default).
  */
-export function createHubTransport(opts: { hubUrl: string; authToken?: string }): Transport {
-  void opts;
-  throw new Error("createHubTransport: not implemented (Phase 6)");
+export interface HubTransportOpts {
+  hubUrl: string;
+  authToken: string;
+  agentId: string;
+  self: Peer;
+  maxMessageBytes: number;
+  onFrame?: (frame: Frame, from: string) => void | Promise<void>;
+  onPeerEvent?: (type: "peer-joined" | "peer-left" | "peer-updated", peer: Peer) => void;
+}
+
+export function createHubTransport(opts: HubTransportOpts): Transport & Registry {
+  const { hubUrl, authToken, agentId, self } = opts;
+  const base = hubUrl.replace(/\/$/, "");
+  const headers = { "x-mesh-token": authToken, "content-type": "application/json" };
+  let peerList: Peer[] = [];
+  let frameHandler: ((frame: Frame, from: string) => void | Promise<void>) | null = opts.onFrame ?? null;
+  let peerHandler = opts.onPeerEvent ?? (() => {});
+  let sseReq: import("node:http").ClientRequest | null = null;
+  let sseClosed = false;
+
+  async function post(path: string, body: unknown): Promise<unknown> {
+    try {
+      const r = await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body) });
+      return await r.json().catch(() => ({}));
+    } catch { return {}; }
+  }
+
+  function openSSE(): void {
+    const u = new URL(base + "/events?agentId=" + encodeURIComponent(agentId));
+    const lib = u.protocol === "https:" ? https : http;
+    sseClosed = false;
+    sseReq = lib.get(u, { headers: { "x-mesh-token": authToken } }, (res: import("node:http").IncomingMessage) => {
+      let buf = "";
+      res.setEncoding("utf-8");
+      res.on("data", (chunk: string) => {
+        buf += chunk;
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const event = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const dataLine = event.split("\n").find((l) => l.startsWith("data: "));
+          if (!dataLine) continue;
+          try { dispatchSSE(JSON.parse(dataLine.slice(6)) as { type: string; [k: string]: unknown }); } catch { /* skip */ }
+        }
+      });
+      res.on("close", () => { if (!sseClosed) setTimeout(openSSE, 1000); /* auto-reconnect */ });
+    });
+    sseReq.on("error", () => { if (!sseClosed) setTimeout(openSSE, 1000); });
+  }
+
+  function dispatchSSE(evt: { type: string; [k: string]: unknown }): void {
+    if (evt.type === "frame" && evt.frame) { try { frameHandler?.(evt.frame as Frame, "hub"); } catch { /* ignore */ } return; }
+    if (evt.type === "peers" && Array.isArray(evt.peers)) { peerList = (evt.peers as Peer[]).filter((p) => p.id !== agentId); return; }
+    if (evt.type === "peer-joined" && evt.peer) { const p = evt.peer as Peer; if (p.id !== agentId && !peerList.some((x) => x.id === p.id)) peerList.push(p); peerHandler("peer-joined", p); return; }
+    if (evt.type === "peer-left" && evt.peer) { const p = evt.peer as Peer; peerList = peerList.filter((x) => x.id !== p.id); peerHandler("peer-left", p); return; }
+    if (evt.type === "peer-updated" && evt.peer) { const p = evt.peer as Peer; peerList = peerList.map((x) => x.id === p.id ? { ...x, ...p } : x); peerHandler("peer-updated", p); return; }
+  }
+
+  // ── Transport ─────────────────────────────────────────────────────────
+  async function start(): Promise<void> { openSSE(); }
+  async function stop(): Promise<void> {
+    sseClosed = true;
+    try { sseReq?.destroy(); } catch { /* ignore */ }
+    sseReq = null;
+    await post("/leave", { agentId });
+  }
+  async function send(to: string, frame: Frame): Promise<void> { await post("/send", { frame }); }
+  async function broadcast(channel: string, frame: Frame): Promise<void> { void channel; await post("/send", { frame }); }
+  function onFrame(handler: (frame: Frame, from: string) => void | Promise<void>): void { frameHandler = handler; }
+
+  // ── Registry (hub mode: the hub holds the live registry) ───────────────
+  async function join(s: Peer): Promise<void> {
+    void s;
+    const resp = (await post("/join", { agentId, peer: self })) as { peers?: Peer[] };
+    if (Array.isArray(resp.peers)) peerList = resp.peers.filter((p) => p.id !== agentId);
+  }
+  async function leave(): Promise<void> { await post("/leave", { agentId }); }
+  async function list(): Promise<Peer[]> { return peerList.filter((p) => p.alive !== false); }
+  async function refreshPool(): Promise<Peer[]> { return list(); }
+  async function heartbeat(): Promise<void> { await post("/heartbeat", { agentId }); }
+  async function updateSelf(patch: Partial<Peer>): Promise<void> {
+    const body: Record<string, unknown> = { agentId };
+    if (patch.contextUsage !== undefined) body.contextUsage = patch.contextUsage;
+    if (patch.channels !== undefined) body.channels = patch.channels;
+    if (patch.claimedTarget !== undefined) body.claimedTarget = patch.claimedTarget;
+    await post("/heartbeat", body);
+  }
+  async function updateContext(usage: number | undefined): Promise<void> { await updateSelf({ contextUsage: usage }); }
+  async function updateClaim(target: string | undefined): Promise<void> { await updateSelf({ claimedTarget: target }); }
+
+  return { start, stop, send, broadcast, onFrame, join, leave, list, refreshPool, heartbeat, updateSelf, updateContext, updateClaim, selfId: agentId } as unknown as Transport & Registry;
 }
 
 /**

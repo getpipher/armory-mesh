@@ -76,11 +76,16 @@
 
 **Critical bug fixed (found via the Phase 5 dup-check round-trip):** `canonicalString` (auth HMAC) included object keys with `undefined` values as `null`, but JSON over the wire DROPS undefined properties — so a heartbeat carrying `claimedTarget: undefined` produced a different canonical string on the sender vs the receiver → signature mismatch → EVERY heartbeat (and every direct reply) was silently dropped. Discovery still worked via the registry fallback (which is why earlier phases’ smoke tests passed), but live context-usage gossip + the dup_check round-trip did not. Fixed by skipping undefined-valued keys in `canonicalString` (so the canonical form matches the JSON wire form). This was a latent bug across ALL phases — the fix retroactively makes the heartbeat/pong gossip + every signed reply actually verify.
 
-### Phase 6 — remote transport (the hub) + unified auto-selection 🚧
-- [ ] `src/hub.ts` — the HTTP+SSE hub (`bun src/hub.ts`), relays messages + holds the shared registry; LAN mode needs `PI_MESH_AUTH_TOKEN`.
-- [ ] `src/transport.ts` — unified auto-selection: same-machine → Unix socket, cross-machine → hub; identical tool API.
-- [ ] Mesh relay: a peer relays to an unreachable peer (visited-set + hop-count loop-prevention).
-- [ ] Hub failover (standby hub + client fail-over) — Phase 6.5.
+### Phase 6 — remote hub + unified transport ✅ (2026-08-10)
+**Goal:** cross-machine discovery + message relay via a small HTTP+SSE hub; identical tool API.
+- [x] `src/hub.ts` — standalone HTTP+SSE hub (Node `http`, no deps): `/join` `/leave` `/heartbeat` `/send` + `/events` SSE. Holds the live cross-host registry + relays messages. Auth-gated (`X-Mesh-Token`, constant-time; `PI_MESH_AUTH_TOKEN` required). Hub-side liveness eviction. Runnable standalone (`node --import <jiti>/lib/jiti-register.mjs src/hub.ts`).
+- [x] `src/transport.ts` — `createHubTransport`: SSE inbound (frames + peer events, auto-reconnect) + HTTP POST outbound (join/leave/heartbeat/send). Implements **both** `Transport` + `Registry` (in hub mode the MeshCore uses one object for both — the hub holds the live registry; no local file registry).
+- [x] Unified auto-selection in `createMeshCore`: `config.hubUrl` set → hub transport + hub registry; else local Unix-socket transport + file registry. The tool API (`mesh_send` etc.) is identical either way.
+- [ ] Mesh relay (hub-less cross-machine, visited-set + hop-count loop-prevention) — **deferred to Phase 6.5**.
+- [ ] Hub failover (standby hub + client fail-over) — **deferred to Phase 6.5**.
+- [x] Smoke test: `scripts/smoke-phase6.ts` — in-process hub + two hub-mode cores: discovery via SSE, signed round-trip through the hub, `#general` broadcast, auth gate (no/wrong/correct token → 401/401/200), hub-side eviction of a crashed peer.
+
+**Phase 6 design:** the hub is a **dumb relay** — it never sees the project key; messages stay signed + nonce-protected (peers verify on receive). The hub only needs `PI_MESH_AUTH_TOKEN` (the LAN gate). Defense in depth: a rogue can't join without the token, AND couldn't forge signed messages even if it could. The HubTransport doubles as the registry (the hub holds the live peer list; SSE `peer-joined/left/updated` events keep each peer's view current). **Known limitation (Phase 6.5):** channel logs are per-machine local files, so cross-machine late-joiner catch-up (a peer on machine X replaying messages persisted on machine Y) isn't solved by the hub relay alone — the hub doesn't store messages. The `replay`/`replay-resp` Frame kinds (reserved since Phase 4) are the planned fix, or the hub stores+replays.
 
 ### Phase 7 — hardening pass 🚧
 - [ ] Per-channel rate cap (default 10 msg/s) + per-message size cap (256KB) enforcement.
@@ -108,7 +113,7 @@
 | 3 typed messages + channels | ✅ done (2026-08-10) | smoke3 passed |
 | 4 persistence + replay | ✅ done (2026-08-10) | smoke4 passed |
 | 5 fleet-state primitives | ✅ done (2026-08-10) | smoke5 passed |
-| 6 remote hub + unified transport | 🚧 | — |
+| 6 remote hub + unified transport | ✅ done (2026-08-10) | smoke6 passed; mesh relay + failover deferred to 6.5 |
 | 7 hardening pass | 🚧 | — |
 | 8 dogfood in bug-bounty fleet | 🚧 | the graduation gate |
 | 9 publish | 🚧 | — |

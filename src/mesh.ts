@@ -14,7 +14,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Peer, MeshMsg, MsgType, Channel, FleetState, DupCheckResult } from "./index.js";
 import { createAuth, type Auth } from "./auth.js";
 import { createRegistry, type Registry } from "./registry.js";
-import { createLocalTransport } from "./transport.js";
+import { createLocalTransport, createHubTransport } from "./transport.js";
 import type { Frame, Transport } from "./types.js";
 import { paths } from "./paths.js";
 import type { MeshConfig } from "./config.js";
@@ -80,13 +80,29 @@ export async function createMeshCore(opts: {
   const { config, self } = opts;
   const getCtxUsage = opts.getCtxUsage ?? (() => undefined);
   const auth: Auth = createAuth({ project: config.project, selfId: self.id });
-  const registry: Registry = createRegistry({
-    project: config.project,
-    agentId: self.id,
-    pingMs: config.pingMs,
-    evictionMisses: config.evictionMisses,
-  });
+  let registry: Registry;
   let transport: Transport;
+  if (config.hubUrl && config.authToken) {
+    // Phase 6: hub mode — one HubTransport object serves as BOTH transport + registry (the hub
+    // holds the live registry; no local file registry). Same tool API as local mode.
+    const hub = createHubTransport({
+      hubUrl: config.hubUrl,
+      authToken: config.authToken,
+      agentId: self.id,
+      self,
+      maxMessageBytes: config.maxMessageBytes,
+    });
+    registry = hub as unknown as Registry;
+    transport = hub as unknown as Transport;
+  } else {
+    registry = createRegistry({
+      project: config.project,
+      agentId: self.id,
+      pingMs: config.pingMs,
+      evictionMisses: config.evictionMisses,
+    });
+    transport = null as unknown as Transport; // assigned below via createLocalTransport
+  }
   let heartbeatTimer: NodeJS.Timeout | null = null;
   const inbound: MeshMsg[] = [];
 
@@ -147,14 +163,19 @@ export async function createMeshCore(opts: {
     cachedPeers = await registry.refreshPool();
   }
 
-  transport = createLocalTransport({
-    project: config.project,
-    agentId: self.id,
-    maxMessageBytes: config.maxMessageBytes,
-    resolveSocket,
-    allPeerSockets,
-    onFrame: handleFrame,
-  });
+  if (config.hubUrl && config.authToken) {
+    // Hub mode: the HubTransport is already created above; wire its onFrame to our handler.
+    transport.onFrame(handleFrame);
+  } else {
+    transport = createLocalTransport({
+      project: config.project,
+      agentId: self.id,
+      maxMessageBytes: config.maxMessageBytes,
+      resolveSocket,
+      allPeerSockets,
+      onFrame: handleFrame,
+    });
+  }
 
   function handleFrame(frame: Frame, _fromSocket: string): void {
     if (frame.kind !== "msg" || !frame.msg) return; // Phase 1/2 handle 'msg' only
