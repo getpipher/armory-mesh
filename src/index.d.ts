@@ -44,7 +44,8 @@ export interface MeshMsg {
 /** A cursor into a channel's persisted log (for late-joiner replay). */
 export interface Cursor {
   channel: string;
-  seq: number;           // the last-seen message sequence in that channel
+  seq?: number;          // the last-seen message sequence in that channel (optional, for a future monotonic seq)
+  ts?: number;          // the last-seen message ts (epoch ms) — used for replay
 }
 
 /** A fleet-state entry (persisted to fleet-state.jsonl). */

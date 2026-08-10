@@ -55,10 +55,14 @@
 
 **Phase 3 design:** channels are subscription-scoped (not just filter tags). Self subscriptions are gossiped via the heartbeat card's `channels` field, so a sender routes a per-target message only to known subscribers (a small fleet doesn't spam uninterested peers). Default channels = everyone subscribed → broadcast-all (same as Phase 1/2). Subscription propagation latency is ≤ pingMs (gossip); Phase 7 may add an immediate subscribe-broadcast.
 
-### Phase 4 — persistence + late-joiner replay (the durable ledger) 🚧
-- [ ] `src/persistence.ts` — optional per-channel ndjson log (`logs/<channel>.ndjson`), rotated by size.
-- [ ] Cursor-based replay on join (send last-seen cursor → replay from there).
-- [ ] `fleet-state.jsonl` — the always-persisted durable ledger (claims + findings + handoffs).
+### Phase 4 — persistence + late-joiner replay (the durable ledger) ✅ (2026-08-10)
+**Goal:** a finding broadcast at 02:00 is not lost when a session starts at 09:00.
+- [x] `src/persistence.ts` — optional per-channel ndjson logs (`logs/<channel>.ndjson`, rotated by size) + the always-persisted `fleet-state.jsonl` + per-agent cursor files.
+- [x] Cursor-based replay on join: a fresh peer reads the shared channel log from its saved cursor (catch-up). Local mode shares the log file across peers (no cross-peer round-trip — the `replay`/`replay-resp` Frame kinds are reserved for Phase 6 cross-machine hub).
+- [x] `fleet-state.jsonl` — append + read (the durable ledger; `mesh_fleet_state` reads it). Phase 5 fleet-state primitives write through here.
+- [x] Smoke test: `scripts/smoke-phase4.ts` — channel-log write-through, fresh-peer catch-up, **no-receiver-online broadcast is still persisted + caught up** (the 02:00→09:00 scenario), cursor resume (stable id), the fleet-state ledger.
+
+**Phase 4 design:** persistence is **write-through on SEND** (the sender is the authoritative writer) — a finding broadcast with no peer online is still persisted, so a 09:00 session catches up on the 02:00 broadcast. Receivers don't double-persist; replay dedups by msg id. Local mode shares `~/.pi/mesh/<project>/logs/<channel>.ndjson` across peers (O_APPEND = atomic for lines < PIPE_BUF). Cursor resume needs a stable agent id; the extension uses a random uuid per session (so restarts are fresh-cursor full replay — acceptable for the dogfood fleet; Phase 7 may add a stable-id mode for true resume).
 
 ### Phase 5 — fleet-state primitives (the "rich" layer) 🚧
 - [ ] `src/fleet-state.ts` — `mesh_claim_target` / `mesh_release_target` / `mesh_bank_finding` / `mesh_dup_check` / `mesh_handoff` / `mesh_fleet_state` / `mesh_channels`.
@@ -96,7 +100,7 @@
 | 1 coms parity (local + 4 tools) | ✅ done (2026-08-10) | smoke test passed; real 2-session run |
 | 2 liveness + widget | ✅ done (2026-08-10) | smoke2 + widget smoke passed |
 | 3 typed messages + channels | ✅ done (2026-08-10) | smoke3 passed |
-| 4 persistence + replay | 🚧 | — |
+| 4 persistence + replay | ✅ done (2026-08-10) | smoke4 passed |
 | 5 fleet-state primitives | 🚧 | — |
 | 6 remote hub + unified transport | 🚧 | — |
 | 7 hardening pass | 🚧 | — |

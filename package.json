@@ -45,11 +45,12 @@
     ]
   },
   "scripts": {
-    "test": "pnpm test:smoke && pnpm test:smoke2 && pnpm test:smoke2-widget && pnpm test:smoke3",
+    "test": "pnpm test:smoke && pnpm test:smoke2 && pnpm test:smoke2-widget && pnpm test:smoke3 && pnpm test:smoke4",
     "test:smoke": "jiti scripts/smoke-phase1.ts",
     "test:smoke2": "jiti scripts/smoke-phase2.ts",
     "test:smoke2-widget": "jiti scripts/smoke-phase2-widget.ts",
     "test:smoke3": "jiti scripts/smoke-phase3.ts",
+    "test:smoke4": "jiti scripts/smoke-phase4.ts",
     "build": "echo \"no build step (TypeScript source loaded directly by pi)\" && exit 0"
   },
   "devDependencies": {
@@ -70,8 +71,5 @@
     "@sinclair/typebox": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "jiti": "^2.7.0"
   }
 }

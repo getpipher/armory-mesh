@@ -12,6 +12,7 @@ export interface MeshConfig {
   channelRatePerSec: number;  // per-channel rate cap
   maxHops: number;            // mesh relay hop limit (loop-prevention)
   persistChannels: string[];  // channels that log to disk (opt-in)
+  maxChannelLogBytes: number; // per-channel log rotation threshold
 }
 
 export const defaultMeshConfig = (overrides: Partial<MeshConfig> = {}): MeshConfig => ({
@@ -25,5 +26,6 @@ export const defaultMeshConfig = (overrides: Partial<MeshConfig> = {}): MeshConf
   channelRatePerSec: Number(process.env.PI_MESH_CHANNEL_RATE_PER_SEC) || 10,
   maxHops: Number(process.env.PI_MESH_MAX_HOPS) || 8,
   persistChannels: (process.env.PI_MESH_PERSIST_CHANNELS ?? "#dup-check,#handoff,#general").split(",").filter(Boolean),
+  maxChannelLogBytes: Number(process.env.PI_MESH_MAX_CHANNEL_LOG_BYTES) || 10 * 1024 * 1024,
   ...overrides,
 });

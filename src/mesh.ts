@@ -19,6 +19,7 @@ import type { Frame, Transport } from "./types.js";
 import { paths } from "./paths.js";
 import type { MeshConfig } from "./config.js";
 import { DEFAULT_CHANNELS, createChannelRegistry, isDefaultChannel, isValidChannelName, routeTargets, validateType, type ChannelRegistry } from "./channels.js";
+import { appendChannelLog, replayChannelFromTs, readFleetState, loadCursors, saveCursors } from "./persistence.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 
@@ -96,6 +97,20 @@ export async function createMeshCore(opts: {
   let onPeersChanged: ((peers: Peer[]) => void) | null = null;
   let lastNotifiedSig = "";
   const myChannels: ChannelRegistry = createChannelRegistry({ initial: [...DEFAULT_CHANNELS] });
+  // Phase 4: persistence + late-joiner replay.
+  const seen = new Set<string>(); // processed msg ids (dedup for live vs replay overlap); bounded
+  const SEEN_CAP = 8192;
+  const cursors: Record<string, number> = {}; // channel -> last-seen ts (epoch ms)
+  let cursorTimer: NodeJS.Timeout | null = null;
+  function markSeen(id: string): boolean {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (seen.size > SEEN_CAP) {
+      const it = seen.values();
+      for (let i = 0; i < SEEN_CAP / 2; i++) seen.delete(it.next().value);
+    }
+    return true;
+  }
 
   // resolveSocket / allPeerSockets feed the transport from the live registry.
   function resolveSocket(id: string): string | undefined {
@@ -147,9 +162,13 @@ export async function createMeshCore(opts: {
       }
       return;
     }
+    // Phase 4: dedup by msg id (a message may arrive both live and via late-joiner replay).
+    if (!markSeen(msg.id)) return;
     inbound.push(msg);
     // Cap the inbound queue so a noisy peer can't OOM us (Phase 7 tightens rate caps).
     if (inbound.length > 4096) inbound.splice(0, inbound.length - 4096);
+    // Phase 4: advance this peer's per-channel cursor (the sender already persisted the log).
+    if (msg.channel && msg.ts > (cursors[msg.channel] ?? -Infinity)) cursors[msg.channel] = msg.ts;
   }
 
   let nonceCounter = 0;
@@ -165,6 +184,12 @@ export async function createMeshCore(opts: {
     await registry.join(self);
     await refreshCachedPeers();
     await transport.start();
+    // Phase 4: late-joiner catch-up — replay each persisted channel's shared log from this peer's
+    // last-seen cursor (a fresh session catches up on the 02:00 finding broadcast at 09:00).
+    await catchUpPersistedChannels();
+    // Cursor persistence: save cursors periodically + on shutdown (so a restarted session resumes).
+    cursorTimer = setInterval(() => { saveCursors(config.project, self.id, cursors).catch(() => {}); }, 2000);
+    cursorTimer.unref?.();
     // Heartbeat loop (Phase 2): every pingMs —
     //   1. self-heal + write self's registry file with live lastSeen + contextUsage
     //   2. broadcast a SIGNED 'heartbeat' message on #heartbeats (the context-usage + liveness broadcast)
@@ -211,12 +236,35 @@ export async function createMeshCore(opts: {
     heartbeatTimer.unref?.();
   }
 
+  /** Phase 4: replay each persisted channel's shared log from this peer's saved cursor; merge new
+   *  messages into the inbound queue (dedup by id). */
+  async function catchUpPersistedChannels(): Promise<void> {
+    const saved = await loadCursors(config.project, self.id).catch(() => ({}));
+    for (const [c, ts] of Object.entries(saved)) cursors[c] = ts;
+    for (const channel of config.persistChannels) {
+      const sinceTs = cursors[channel] ?? -Infinity;
+      let msgs: MeshMsg[] = [];
+      try { msgs = await replayChannelFromTs(config.project, channel, sinceTs); } catch { /* no log yet */ }
+      for (const m of msgs) {
+        if (m.type === "heartbeat") continue;
+        if (!markSeen(m.id)) continue;
+        inbound.push(m);
+        if (m.ts > (cursors[channel] ?? -Infinity)) cursors[channel] = m.ts;
+      }
+    }
+  }
+
   async function stop(): Promise<void> {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (cursorTimer) {
+      clearInterval(cursorTimer);
+      cursorTimer = null;
+    }
     onPeersChanged = null;
+    await saveCursors(config.project, self.id, cursors).catch(() => {}); // graceful: persist the resume cursor
     await transport.stop().catch(() => {});
     await registry.leave().catch(() => {});
   }
@@ -226,6 +274,11 @@ export async function createMeshCore(opts: {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (cursorTimer) {
+      clearInterval(cursorTimer);
+      cursorTimer = null;
+    }
+    await saveCursors(config.project, self.id, cursors).catch(() => {}); // best-effort: save progress
     await transport.stop().catch(() => {});
     // Intentionally do NOT call registry.leave() — a SIGKILL'd process leaves a stale registry
     // file that the liveness eviction (refreshPool) must clean up.
@@ -305,6 +358,12 @@ export async function createMeshCore(opts: {
     };
     msg.sig = auth.sign(msg);
     const frame: Frame = { kind: "msg", msg };
+    // Phase 4: write-through to the channel log on SEND (the sender is the authoritative writer —
+    // a finding broadcast with no peer online is still persisted, so a 09:00 session catches up
+    // on the 02:00 broadcast). Receivers don't double-persist; replay dedups by id.
+    if (config.persistChannels.includes(channel)) {
+      appendChannelLog(config.project, msg, config.maxChannelLogBytes).catch(() => {});
+    }
     if (args.target) {
       await transport.send(args.target, frame);
     } else {
@@ -582,8 +641,10 @@ export const meshFleetState = {
   description:
     "Read the durable fleet-state ledger — all claims, findings, handoffs, dup-checks. The persisted snapshot of the fleet (survives restarts; the durable HUNT-FLEET.md layer, structured + typed).",
   parameters: Type.Object({}),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_fleet_state: not implemented (Phase 5)");
+  async execute(_toolCallId: string, _args: Record<string, never>, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    const entries = await readFleetState(core.config.project);
+    return textResult(JSON.stringify({ project: core.config.project, entries }, null, 2));
   },
 };
 
