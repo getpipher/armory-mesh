@@ -24,4 +24,7 @@ export const paths = {
   channelLog: (project: string, channel: string) =>
     path.join(projectDir(project), "logs", `${encodeURIComponent(channel)}.ndjson`),
   fleetState: (project: string) => path.join(projectDir(project), "fleet-state.jsonl"),
+  claimsDir: (project: string) => path.join(projectDir(project), "claims"),
+  claimFile: (project: string, target: string) =>
+    path.join(projectDir(project), "claims", `${target.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`),
 } as const;

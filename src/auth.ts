@@ -30,7 +30,10 @@ function canonicalString(value: unknown): string {
     return "[" + value.map(canonicalString).join(",") + "]";
   }
   if (typeof value === "object" && value !== undefined) {
-    const keys = Object.keys(value as Record<string, unknown>).sort();
+    // Skip keys whose value is undefined so the canonical form matches the JSON wire form
+    // (JSON.stringify drops undefined-valued object properties; a sig computed over a payload
+    // with an undefined field would otherwise mismatch the receiver's parsed payload).
+    const keys = Object.keys(value as Record<string, unknown>).filter((k) => (value as Record<string, unknown>)[k] !== undefined).sort();
     return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalString((value as Record<string, unknown>)[k])).join(",") + "}";
   }
   return "null";

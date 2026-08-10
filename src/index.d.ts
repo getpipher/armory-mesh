@@ -68,3 +68,10 @@ export interface Channel {
   subscribers: number;
   persisted: boolean; // whether this channel logs to disk
 }
+
+/** A cross-hunt dup-check result from one peer. */
+export interface DupCheckResult {
+  from: string;       // the responding peer's agent id
+  overlap: boolean;   // whether the peer has a matching finding
+  note?: string;      // optional detail (e.g. the matching finding's title/ref)
+}

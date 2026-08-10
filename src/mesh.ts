@@ -11,7 +11,7 @@
 
 import { Type } from "@sinclair/typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Peer, MeshMsg, MsgType, Channel, FleetState } from "./index.js";
+import type { Peer, MeshMsg, MsgType, Channel, FleetState, DupCheckResult } from "./index.js";
 import { createAuth, type Auth } from "./auth.js";
 import { createRegistry, type Registry } from "./registry.js";
 import { createLocalTransport } from "./transport.js";
@@ -19,7 +19,8 @@ import type { Frame, Transport } from "./types.js";
 import { paths } from "./paths.js";
 import type { MeshConfig } from "./config.js";
 import { DEFAULT_CHANNELS, createChannelRegistry, isDefaultChannel, isValidChannelName, routeTargets, validateType, type ChannelRegistry } from "./channels.js";
-import { appendChannelLog, replayChannelFromTs, readFleetState, loadCursors, saveCursors } from "./persistence.js";
+import { appendChannelLog, replayChannelFromTs, readFleetState, appendFleetState, loadCursors, saveCursors } from "./persistence.js";
+import { createFleetStatePrimitives, type FleetStateCtx, type FleetStatePrimitives } from "./fleet-state.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 
@@ -43,6 +44,12 @@ export interface MeshCore {
   unsubscribe(channel: string): void;
   /** List channels + live subscriber counts (+ whether they persist — Phase 4). */
   channelsView(): Channel[];
+  // ── Phase 5: the fleet-state primitives (the “rich” layer) ──────────────────
+  claimTarget(target: string, scope?: string): Promise<boolean>;
+  releaseTarget(target: string): Promise<void>;
+  bankFinding(target: string, severity: string, title: string, ref: string): Promise<void>;
+  dupCheck(target: string, title: string, rootCause: string, timeoutMs?: number): Promise<DupCheckResult[]>;
+  handoff(target: string, handoffPath: string): Promise<void>;
   send(args: { target?: string; channel?: string; type?: MsgType; payload: unknown }): Promise<string>;
   get(args: { channel?: string; type?: MsgType; since?: number }): Promise<MeshMsg[]>;
   awaitMsg(args: { channel?: string; type?: MsgType; from?: string; timeoutMs?: number }): Promise<MeshMsg | undefined>;
@@ -160,6 +167,11 @@ export async function createMeshCore(opts: {
       if (card && typeof card.id === "string" && card.id !== self.id) {
         liveCards.set(card.id, { card, lastSeen: Date.now() });
       }
+      return;
+    }
+    // Phase 5: a dup_check request is auto-answered (overlap check) — NOT queued.
+    if (msg.type === "dup_check") {
+      void fleet.respondToDupCheck(msg);
       return;
     }
     // Phase 4: dedup by msg id (a message may arrive both live and via late-joiner replay).
@@ -454,6 +466,27 @@ export async function createMeshCore(opts: {
     return undefined;
   }
 
+  // Phase 5: wire the fleet-state primitives (claim/bank/dup-check/handoff).
+  function setClaimedTarget(target: string | undefined): void {
+    self.claimedTarget = target;
+    registry.updateSelf({ claimedTarget: target }).catch(() => {});
+  }
+  function signBody(m: Omit<MeshMsg, "sig">): string { return auth.sign(m); }
+  function transportSend(to: string, frame: { kind: "msg"; msg: MeshMsg }): Promise<void> { return transport.send(to, frame); }
+  const fleetCtx: FleetStateCtx = {
+    project: config.project,
+    selfId: self.id,
+    pingMs: config.pingMs,
+    evictionMisses: config.evictionMisses,
+    setClaimedTarget,
+    sign: signBody,
+    nextNonce,
+    send,
+    transportSend,
+    inbound,
+  };
+  const fleet = createFleetStatePrimitives(fleetCtx);
+
   return {
     self,
     config,
@@ -465,6 +498,11 @@ export async function createMeshCore(opts: {
     subscribe,
     unsubscribe,
     channelsView,
+    claimTarget: fleet.claimTarget,
+    releaseTarget: fleet.releaseTarget,
+    bankFinding: fleet.bankFinding,
+    dupCheck: fleet.dupCheck,
+    handoff: fleet.handoff,
     get onPeersChanged() {
       return onPeersChanged;
     },
@@ -572,8 +610,12 @@ export const meshClaimTarget = {
     target: Type.String({ description: 'The hunt target to claim (e.g. "gmtrade").' }),
     scope: Type.Optional(Type.String({ description: 'Optional scope summary to share with the fleet.' })),
   }),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_claim_target: not implemented (Phase 5)");
+  async execute(_toolCallId: string, args: { target: string; scope?: string }, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    try {
+      const won = await core.claimTarget(args.target, args.scope);
+      return textResult(won ? `claimed "${args.target}"` : `claim LOST — another session holds "${args.target}" (see mesh_list)`);
+    } catch (err) { return textResult(`mesh_claim_target failed: ${err instanceof Error ? err.message : String(err)}`); }
   },
 };
 
@@ -584,8 +626,10 @@ export const meshReleaseTarget = {
   parameters: Type.Object({
     target: Type.String({ description: 'The target to release.' }),
   }),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_release_target: not implemented (Phase 5)");
+  async execute(_toolCallId: string, args: { target: string }, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    try { await core.releaseTarget(args.target); return textResult(`released "${args.target}"`); }
+    catch (err) { return textResult(`mesh_release_target failed: ${err instanceof Error ? err.message : String(err)}`); }
   },
 };
 
@@ -600,8 +644,10 @@ export const meshBankFinding = {
     title: Type.String({ description: 'Short finding title.' }),
     ref: Type.String({ description: 'Reference (file path / gist / report id).' }),
   }),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_bank_finding: not implemented (Phase 5)");
+  async execute(_toolCallId: string, args: { target: string; severity: string; title: string; ref: string }, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    try { await core.bankFinding(args.target, args.severity, args.title, args.ref); return textResult(`banked finding: ${args.title} (${args.severity}) on ${args.target}`); }
+    catch (err) { return textResult(`mesh_bank_finding failed: ${err instanceof Error ? err.message : String(err)}`); }
   },
 };
 
@@ -616,8 +662,16 @@ export const meshDupCheck = {
     rootCause: Type.String({ description: 'The root-cause summary (for overlap matching).' }),
     timeoutMs: Type.Optional(Type.Number({ description: 'Await timeout in ms (default 5000).' })),
   }),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_dup_check: not implemented (Phase 5)");
+  async execute(_toolCallId: string, args: { target: string; title: string; rootCause: string; timeoutMs?: number }, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    try {
+      const results = await core.dupCheck(args.target, args.title, args.rootCause, args.timeoutMs);
+      const overlap = results.filter((r) => r.overlap);
+      const summary = overlap.length > 0
+        ? `DUP-OVERLAP detected from ${overlap.map((r) => r.from.slice(0, 8)).join(",")}: ${overlap.map((r) => r.note).filter(Boolean).join("; ")}`
+        : `no overlap (${results.length} response${results.length === 1 ? "" : "s"})`;
+      return textResult(JSON.stringify({ results, summary }, null, 2));
+    } catch (err) { return textResult(`mesh_dup_check failed: ${err instanceof Error ? err.message : String(err)}`); }
   },
 };
 
@@ -630,8 +684,10 @@ export const meshHandoff = {
     target: Type.String({ description: 'The target being handed off.' }),
     handoffPath: Type.String({ description: 'Path to the handoff file.' }),
   }),
-  async execute(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-    throw new Error("mesh_handoff: not implemented (Phase 5)");
+  async execute(_toolCallId: string, args: { target: string; handoffPath: string }, _signal, _onUpdate, _ctx: ExtensionContext) {
+    const core = getMesh();
+    try { await core.handoff(args.target, args.handoffPath); return textResult(`handoff announced: ${args.handoffPath} (target ${args.target})`); }
+    catch (err) { return textResult(`mesh_handoff failed: ${err instanceof Error ? err.message : String(err)}`); }
   },
 };
 

@@ -64,11 +64,17 @@
 
 **Phase 4 design:** persistence is **write-through on SEND** (the sender is the authoritative writer) — a finding broadcast with no peer online is still persisted, so a 09:00 session catches up on the 02:00 broadcast. Receivers don't double-persist; replay dedups by msg id. Local mode shares `~/.pi/mesh/<project>/logs/<channel>.ndjson` across peers (O_APPEND = atomic for lines < PIPE_BUF). Cursor resume needs a stable agent id; the extension uses a random uuid per session (so restarts are fresh-cursor full replay — acceptable for the dogfood fleet; Phase 7 may add a stable-id mode for true resume).
 
-### Phase 5 — fleet-state primitives (the "rich" layer) 🚧
-- [ ] `src/fleet-state.ts` — `mesh_claim_target` / `mesh_release_target` / `mesh_bank_finding` / `mesh_dup_check` / `mesh_handoff` / `mesh_fleet_state` / `mesh_channels`.
-- [ ] Atomic claim (a target can't be double-claimed; the loser sees the winner via `mesh_list`).
-- [ ] `mesh_dup_check` broadcasts on `#dup-check` + `mesh_await` collects `dup_check_result` responses (cross-hunt dup-check).
-- [ ] Write-through to `fleet-state.jsonl`.
+### Phase 5 — fleet-state primitives (the “rich” layer) ✅ (2026-08-10)
+**Goal:** typed, persisted fleet ops on top of the generic mesh — claim/bank/dup-check/handoff.
+- [x] `src/fleet-state.ts` — `createFleetStatePrimitives(ctx)` factory: claimTarget / releaseTarget / bankFinding / dupCheck / handoff + the dup_check auto-responder. MeshCore wires them in.
+- [x] Atomic claim (a target can’t be double-claimed) — filesystem lock via O_EXCL (`claims/<target>.json`); first writer wins; a stale claim from an evicted session is reclaimable. The loser sees the holder via mesh_list (`claimedTarget` field, gossiped via heartbeats) + the #general claim broadcast.
+- [x] `mesh_dup_check` broadcasts on #dup-check + collects the peers’ `dup_check_result` responses (cross-hunt dup-check — the killer feature for parallel bug-bounty). Responders check their local fleet-state ledger for overlap.
+- [x] Write-through to `fleet-state.jsonl` (claim/release/finding/dup_check/handoff). `mesh_fleet_state` reads the ledger (Phase 4).
+- [x] Smoke test: `scripts/smoke-phase5.ts` — atomic claim + release + stale reclaim, bank-finding + cross-hunt dup-check (overlap=true + no-overlap=false), handoff, + the ledger records every primitive.
+
+**Phase 5 design:** the primitives are a `createFleetStatePrimitives(ctx)` factory (clean deps via a `FleetStateCtx` interface) so they’re testable in isolation + wired into MeshCore. The dup_check request is auto-answered by the responder (handleFrame intercepts `dup_check` → overlap-check against the local ledger → `dup_check_result` reply) — NOT queued. `mesh_claim_target` uses a filesystem lock (atomic on a single machine); cross-machine atomic claims are a Phase 6 hub concern.
+
+**Critical bug fixed (found via the Phase 5 dup-check round-trip):** `canonicalString` (auth HMAC) included object keys with `undefined` values as `null`, but JSON over the wire DROPS undefined properties — so a heartbeat carrying `claimedTarget: undefined` produced a different canonical string on the sender vs the receiver → signature mismatch → EVERY heartbeat (and every direct reply) was silently dropped. Discovery still worked via the registry fallback (which is why earlier phases’ smoke tests passed), but live context-usage gossip + the dup_check round-trip did not. Fixed by skipping undefined-valued keys in `canonicalString` (so the canonical form matches the JSON wire form). This was a latent bug across ALL phases — the fix retroactively makes the heartbeat/pong gossip + every signed reply actually verify.
 
 ### Phase 6 — remote transport (the hub) + unified auto-selection 🚧
 - [ ] `src/hub.ts` — the HTTP+SSE hub (`bun src/hub.ts`), relays messages + holds the shared registry; LAN mode needs `PI_MESH_AUTH_TOKEN`.
@@ -101,7 +107,7 @@
 | 2 liveness + widget | ✅ done (2026-08-10) | smoke2 + widget smoke passed |
 | 3 typed messages + channels | ✅ done (2026-08-10) | smoke3 passed |
 | 4 persistence + replay | ✅ done (2026-08-10) | smoke4 passed |
-| 5 fleet-state primitives | 🚧 | — |
+| 5 fleet-state primitives | ✅ done (2026-08-10) | smoke5 passed |
 | 6 remote hub + unified transport | 🚧 | — |
 | 7 hardening pass | 🚧 | — |
 | 8 dogfood in bug-bounty fleet | 🚧 | the graduation gate |
