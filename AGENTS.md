@@ -6,17 +6,19 @@
 
 A pi extension package that lets N parallel pi sessions talk to each other **peer-to-peer** (equal agents, no orchestrator), live, so a fleet of hunts (or any parallel work) is mutually aware in real time. The hardened + richer evolution of `coms` — mesh routing, liveness + auto-eviction, unified transport (local ↔ remote), built-in auth (signed + replay-protected), typed messages + channels, optional persistence + late-joiner replay, and fleet-state primitives (claim/bank/dup-check/handoff).
 
-## Current state (2026-08-06)
+## Current state (2026-08-11)
 
-🚧 **scaffold.** Phase 0 done:
-- Repo `getpipher/armory-mesh` (private, in-house) created + cloned to `~/local-dev/getpipher/armory-mesh/`.
-- `package.json` (`@getpipher/armory-mesh`, `pi.extensions: ["./extensions"]`, peerDeps on pi-ai/pi-coding-agent/typebox, MIT).
-- `DESIGN.md` (the full architecture — the coms gaps + the mesh design + the tool API + the hardened guarantees — **READ FIRST on any build session**).
-- `ROADMAP.md` (the 10 build phases; Phase 1 is next).
-- `README.md` + this `AGENTS.md`.
-- `extensions/mesh.ts` + `src/` stubs (the tool signatures + module boundaries, TODO-marked).
+Phases 1-6.5 built + committed on `feat/phase-1-coms-parity` (7 commits, not merged). All 11 tools
+implemented. 8 smoke suites green (`pnpm test`). Local (Unix-socket) + remote (hub) modes both
+working with one MeshCore codepath. Phase 6.5 closed the cross-machine gaps: mesh relay (hub-less,
+visited-set + hop-count loop-prevention), hub failover (standby hub + client fail-over), and
+cross-machine late-joiner replay (hub-stored channel logs). Next: Phase 7 (hardening — per-channel
+rate cap + 256KB size cap enforcement, transport fuzz, observability hooks, security review), then
+Phase 8 (bug-bounty dogfood = graduation gate), Phase 9 (publish).
 
-**Next:** Phase 1 (coms parity: local Unix-socket transport + registry + auth + the 4 core tools `mesh_list`/`mesh_send`/`mesh_get`/`mesh_await`) + the smoke test (two `pi -e extensions/mesh.ts` sessions, confirm `mesh_list` + `mesh_send` round-trip + a killed session is evicted).
+**DESIGN.md + ROADMAP.md are the spec** — build against them, don't re-derive. The hardened
+guarantees (DESIGN §5) are never-compromise: auth-by-default, signed+nonce, liveness+eviction,
+fleet-state never lost, mesh relay loop-prevention, size+rate caps.
 
 ## How to build (the discipline)
 

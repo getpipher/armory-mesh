@@ -16,8 +16,9 @@ import net from "node:net";
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import path from "node:path";
 import type { Transport, Frame } from "./types.js";
-import type { Peer } from "./index.js";
+import type { Peer, MeshMsg } from "./index.js";
 import type { Registry } from "./registry.js";
 import { paths } from "./paths.js";
 
@@ -227,6 +228,11 @@ export function createLocalTransport(opts: LocalTransportOpts): Transport {
   }
 
   async function start(): Promise<void> {
+    // Ensure the socket dir exists before bind (the registry used to mkdir it, but Phase 6.5
+    // reordered start() before join() so the hub transport can open SSE first).
+    if (process.platform !== "win32") {
+      try { fs.mkdirSync(path.dirname(endpoint), { recursive: true }); } catch { /* best-effort */ }
+    }
     server = await bind(endpoint, connHandler);
     server.unref?.();
   }
@@ -308,45 +314,65 @@ export function sendRawFrame(endpointPath: string, frame: Frame, maxBytes: numbe
 }
 
 /**
- * Phase 6: the remote hub transport. Connects to PI_MESH_HUB_URL over SSE (inbound frames + peer
+ * Phase 6/6.5: the remote hub transport. Connects to a hub over SSE (inbound frames + peer
  * events) + HTTP POST (outbound join/leave/heartbeat/send). Implements BOTH Transport + Registry —
  * in hub mode the MeshCore uses one HubTransport object for both (the hub holds the live registry;
  * there's no local file registry). Requires PI_MESH_AUTH_TOKEN for LAN (auth-by-default).
+ *
+ * Phase 6.5 — hub failover: accepts an ORDERED list of hub URLs (hubUrls). On repeated SSE
+ * failure (>= failoverThreshold consecutive close/error events) against the current hub, the
+ * transport rotates to the next hub (round-robin) + re-registers. A brief SSE blip that recovers
+ * resets the failure counter. This closes DESIGN §5.7 (the hub is the one SPOF; a standby hub +
+ * client fail-over harden it).
  */
 export interface HubTransportOpts {
-  hubUrl: string;
+  hubUrls: string[];          // ordered failover chain (≥1)
   authToken: string;
   agentId: string;
   self: Peer;
   maxMessageBytes: number;
+  failoverThreshold: number;   // consecutive SSE failures before rotating to the next hub
   onFrame?: (frame: Frame, from: string) => void | Promise<void>;
   onPeerEvent?: (type: "peer-joined" | "peer-left" | "peer-updated", peer: Peer) => void;
 }
 
 export function createHubTransport(opts: HubTransportOpts): Transport & Registry {
-  const { hubUrl, authToken, agentId, self } = opts;
-  const base = hubUrl.replace(/\/$/, "");
+  const { authToken, agentId, self, hubUrls, failoverThreshold } = opts;
+  if (!hubUrls || hubUrls.length === 0) throw new Error("hub transport: hubUrls must be non-empty");
   const headers = { "x-mesh-token": authToken, "content-type": "application/json" };
+  let currentHub = 0;
+  let consecutiveFailures = 0;
+  let firstConnect = true;     // the initial connect skips re-join (MeshCore.start() joins with cursors)
   let peerList: Peer[] = [];
   let frameHandler: ((frame: Frame, from: string) => void | Promise<void>) | null = opts.onFrame ?? null;
   let peerHandler = opts.onPeerEvent ?? (() => {});
   let sseReq: import("node:http").ClientRequest | null = null;
   let sseClosed = false;
+  let reconnectTimer: NodeJS.Timeout | null = null;
+  let reconnectPending = false; // guards against double-schedule (close + error firing for one failure)
+
+  function currentBase(): string { return hubUrls[currentHub].replace(/\/$/, ""); }
 
   async function post(path: string, body: unknown): Promise<unknown> {
     try {
-      const r = await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body) });
+      const r = await fetch(currentBase() + path, { method: "POST", headers, body: JSON.stringify(body) });
       return await r.json().catch(() => ({}));
     } catch { return {}; }
   }
 
   function openSSE(): void {
-    const u = new URL(base + "/events?agentId=" + encodeURIComponent(agentId));
+    const u = new URL(currentBase() + "/events?agentId=" + encodeURIComponent(agentId));
     const lib = u.protocol === "https:" ? https : http;
     sseClosed = false;
     sseReq = lib.get(u, { headers: { "x-mesh-token": authToken } }, (res: import("node:http").IncomingMessage) => {
       let buf = "";
       res.setEncoding("utf-8");
+      // A successful response means the hub is up — reset the failure counter.
+      consecutiveFailures = 0;
+      // On a reconnect (not the initial connect) re-register on this hub — it may have evicted us
+      // while the SSE was down, and after a failover we are now on a hub that has never seen us.
+      if (!firstConnect) void post("/join", { agentId, peer: self, cursors: {} });
+      firstConnect = false;
       res.on("data", (chunk: string) => {
         buf += chunk;
         let idx: number;
@@ -358,13 +384,31 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
           try { dispatchSSE(JSON.parse(dataLine.slice(6)) as { type: string; [k: string]: unknown }); } catch { /* skip */ }
         }
       });
-      res.on("close", () => { if (!sseClosed) setTimeout(openSSE, 1000); /* auto-reconnect */ });
+      res.on("close", () => { if (!sseClosed) scheduleReconnect(); });
     });
-    sseReq.on("error", () => { if (!sseClosed) setTimeout(openSSE, 1000); });
+    sseReq.on("error", () => { if (!sseClosed) scheduleReconnect(); });
+  }
+
+  function scheduleReconnect(): void {
+    if (reconnectPending) return; // a reconnect is already scheduled — don't double-schedule
+    reconnectPending = true;
+    consecutiveFailures++;
+    if (consecutiveFailures >= failoverThreshold && hubUrls.length > 1) {
+      currentHub = (currentHub + 1) % hubUrls.length;
+      consecutiveFailures = 0;
+      peerList = []; // the new hub has its own registry; start fresh
+    }
+    reconnectTimer = setTimeout(() => { reconnectPending = false; openSSE(); }, 1000);
+    reconnectTimer.unref?.();
   }
 
   function dispatchSSE(evt: { type: string; [k: string]: unknown }): void {
     if (evt.type === "frame" && evt.frame) { try { frameHandler?.(evt.frame as Frame, "hub"); } catch { /* ignore */ } return; }
+    // Phase 6.5: cross-machine late-joiner replay — the hub streams persisted history for a channel.
+    if (evt.type === "replay" && Array.isArray(evt.msgs)) {
+      try { frameHandler?.({ kind: "replay", msgs: evt.msgs as MeshMsg[], channel: typeof evt.channel === "string" ? evt.channel : undefined }, "hub"); } catch { /* ignore */ }
+      return;
+    }
     if (evt.type === "peers" && Array.isArray(evt.peers)) { peerList = (evt.peers as Peer[]).filter((p) => p.id !== agentId); return; }
     if (evt.type === "peer-joined" && evt.peer) { const p = evt.peer as Peer; if (p.id !== agentId && !peerList.some((x) => x.id === p.id)) peerList.push(p); peerHandler("peer-joined", p); return; }
     if (evt.type === "peer-left" && evt.peer) { const p = evt.peer as Peer; peerList = peerList.filter((x) => x.id !== p.id); peerHandler("peer-left", p); return; }
@@ -375,6 +419,7 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
   async function start(): Promise<void> { openSSE(); }
   async function stop(): Promise<void> {
     sseClosed = true;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     try { sseReq?.destroy(); } catch { /* ignore */ }
     sseReq = null;
     await post("/leave", { agentId });
@@ -384,9 +429,9 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
   function onFrame(handler: (frame: Frame, from: string) => void | Promise<void>): void { frameHandler = handler; }
 
   // ── Registry (hub mode: the hub holds the live registry) ───────────────
-  async function join(s: Peer): Promise<void> {
+  async function join(s: Peer, cursors?: Record<string, number>): Promise<void> {
     void s;
-    const resp = (await post("/join", { agentId, peer: self })) as { peers?: Peer[] };
+    const resp = (await post("/join", { agentId, peer: self, cursors: cursors ?? {} })) as { peers?: Peer[] };
     if (Array.isArray(resp.peers)) peerList = resp.peers.filter((p) => p.id !== agentId);
   }
   async function leave(): Promise<void> { await post("/leave", { agentId }); }
@@ -406,10 +451,5 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
   return { start, stop, send, broadcast, onFrame, join, leave, list, refreshPool, heartbeat, updateSelf, updateContext, updateClaim, selfId: agentId } as unknown as Transport & Registry;
 }
 
-/**
- * Phase 6: mesh relay — if a peer is unreachable directly, ask a reachable peer to relay.
- * Visited-set + hop-count (config.maxHops) prevent loops.
- */
-export function relay(_frame: Frame, _via: string, _hops: number): Promise<void> {
-  throw new Error("relay: not implemented (Phase 6)");
-}
+// Phase 6.5: the mesh-relay logic lives in MeshCore (it needs the live peer set + transport +
+// maxHops config). There is no standalone `relay()` function — see MeshCore.relayTo / handleFrame.

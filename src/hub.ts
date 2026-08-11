@@ -35,6 +35,10 @@ interface HubPeer {
   peer: Peer;
   res: http.ServerResponse | null; // the SSE stream (null if not connected)
   lastSeen: number;
+  // Phase 6.5: the join-time cursors this peer requested (per-channel last-seen ts). Replay is
+  // flushed once over the SSE stream when it connects (or immediately if already connected).
+  cursors?: Record<string, number>;
+  replayed?: boolean;
 }
 
 export interface HubOpts {
@@ -42,6 +46,10 @@ export interface HubOpts {
   authToken: string; // required (auth-by-default)
   pingMs?: number;
   evictionMisses?: number;
+  // Phase 6.5: hub-stored channel logs for cross-machine late-joiner replay. Messages on these
+  // channels are kept in an in-memory bounded buffer + replayed to a joining peer from its cursor.
+  persistChannels?: string[];
+  maxChannelLogEntries?: number; // per-channel in-memory cap (default 1000; oldest dropped on overflow)
 }
 
 function safeCompare(a: string, b: string): boolean {
@@ -70,6 +78,37 @@ export function createHubServer(opts: HubOpts): HubServer {
   let server: http.Server | null = null;
   let actualPort = port;
   let evictionTimer: NodeJS.Timeout | null = null;
+  // Phase 6.5: the cross-machine durable store — an in-memory bounded buffer per persisted channel.
+  // The hub is the cross-machine rendezvous (local mode uses the shared filesystem log instead).
+  // Messages are still signed end-to-end; the hub stores opaque signed payloads (it already sees
+  // them in transit, so storing adds no exposure). Bounded to prevent unbounded memory growth.
+  const persistChannels = opts.persistChannels ?? ["#general", "#dup-check", "#handoff", "#learnings"];
+  const maxChannelLogEntries = opts.maxChannelLogEntries ?? 1000;
+  const channelLogs = new Map<string, MeshMsg[]>();
+
+  /** Store a persisted-channel message in the in-memory buffer (bounded; drop oldest on overflow). */
+  function storeMsg(msg: MeshMsg): void {
+    const ch = msg.channel;
+    if (!ch || !persistChannels.includes(ch)) return;
+    const buf = channelLogs.get(ch) ?? [];
+    buf.push(msg);
+    if (buf.length > maxChannelLogEntries) buf.splice(0, buf.length - maxChannelLogEntries);
+    channelLogs.set(ch, buf);
+  }
+
+  /** Flush replayed history to a joining peer over its SSE stream, from its requested cursors. */
+  function flushReplay(hp: HubPeer): void {
+    if (hp.replayed || !hp.res) return;
+    hp.replayed = true;
+    const cursors = hp.cursors ?? {};
+    for (const ch of persistChannels) {
+      const buf = channelLogs.get(ch);
+      if (!buf || buf.length === 0) continue;
+      const sinceTs = cursors[ch] ?? -Infinity;
+      const msgs = buf.filter((m) => m.ts > sinceTs);
+      if (msgs.length > 0) sseWrite(hp.res, { type: "replay", channel: ch, msgs });
+    }
+  }
 
   function broadcast(payload: unknown, except?: string): void {
     for (const [id, hp] of peers) {
@@ -98,6 +137,10 @@ export function createHubServer(opts: HubOpts): HubServer {
   function relayFrame(frame: Frame): void {
     const msg = frame.msg;
     if (!msg) return;
+    // Phase 6.5: store persisted-channel messages for cross-machine late-joiner replay. The hub
+    // is the cross-machine durable store (local mode uses the shared filesystem log instead). A
+    // relayed frame still carries a real message — store on content, not on transport metadata.
+    storeMsg(msg);
     if (msg.to) {
       const hp = peers.get(msg.to);
       if (hp?.res) sseWrite(hp.res, { type: "frame", frame });
@@ -132,6 +175,8 @@ export function createHubServer(opts: HubOpts): HubServer {
         sseWrite(res, { type: "peers", peers: [...peers.values()].map((hp) => hp.peer) });
         const hp = peers.get(agentId);
         if (hp) hp.res = res; else peers.set(agentId, { peer: { id: agentId, name: agentId, model: "", host: "", lastSeen: Date.now(), alive: true }, res, lastSeen: Date.now() });
+        // Phase 6.5: flush cross-machine replay history if this peer already /join'd with cursors.
+        flushReplay(peers.get(agentId)!);
         req.on("close", () => {
           const cur = peers.get(agentId);
           if (cur && cur.res === res) cur.res = null;
@@ -139,12 +184,15 @@ export function createHubServer(opts: HubOpts): HubServer {
         return;
       }
       if (req.method === "POST" && url.pathname === "/join") {
-        const body = (await readJson(req)) as { agentId?: string; peer?: Peer };
+        const body = (await readJson(req)) as { agentId?: string; peer?: Peer; cursors?: Record<string, number> };
         if (!body.peer || !body.agentId) { res.writeHead(400); res.end("{}"); return; }
         const hp = peers.get(body.agentId);
-        if (hp) { hp.peer = body.peer; hp.lastSeen = Date.now(); }
-        else peers.set(body.agentId, { peer: body.peer, res: hp?.res ?? null, lastSeen: Date.now() });
+        if (hp) { hp.peer = body.peer; hp.lastSeen = Date.now(); hp.cursors = body.cursors; }
+        else peers.set(body.agentId, { peer: body.peer, res: null, lastSeen: Date.now(), cursors: body.cursors });
         broadcast({ type: "peer-joined", peer: body.peer }, body.agentId);
+        // Phase 6.5: flush cross-machine replay if the SSE stream is already connected (join after
+        // events). If SSE isn't connected yet, flushReplay is deferred to the /events handler.
+        flushReplay(peers.get(body.agentId)!);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ peers: [...peers.values()].map((p) => p.peer) }));
         return;
@@ -211,6 +259,7 @@ export function createHubServer(opts: HubOpts): HubServer {
       if (evictionTimer) { clearInterval(evictionTimer); evictionTimer = null; }
       for (const hp of peers.values()) { try { hp.res?.end(); } catch { /* ignore */ } }
       peers.clear();
+      channelLogs.clear();
       if (server) await new Promise<void>((r) => server!.close(() => r()));
       server = null;
     },

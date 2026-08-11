@@ -12,7 +12,7 @@ import type { Peer } from "./index.js";
 import { paths } from "./paths.js";
 
 export interface Registry {
-  join(self: Peer): Promise<void>;
+  join(self: Peer, cursors?: Record<string, number>): Promise<void>; // cursors used by the hub transport (Phase 6.5 replay); ignored by the local file registry
   leave(): Promise<void>;
   list(): Promise<Peer[]>; // all registered peers (raw read; no eviction)
   refreshPool(): Promise<Peer[]>; // re-read + evict stale; live peers only (alive === true)
@@ -35,7 +35,7 @@ export function createRegistry(opts: { project: string; agentId: string; pingMs:
     await fs.writeFile(paths.agentFile(project, agentId), JSON.stringify(next), "utf-8");
   }
 
-  async function join(s: Peer): Promise<void> {
+  async function join(s: Peer, _cursors?: Record<string, number>): Promise<void> {
     self = s;
     await fs.mkdir(paths.agentRegistry(project), { recursive: true });
     await fs.mkdir(paths.socketDir(project), { recursive: true });

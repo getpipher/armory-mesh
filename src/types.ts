@@ -10,8 +10,15 @@ export interface Frame {
   peer?: Peer;
   cursor?: Cursor;
   cursors?: Cursor[]; // for replay-resp
-  msgs?: MeshMsg[];   // for replay-resp (replayed history)
+  msgs?: MeshMsg[];   // for replay-resp / replay (replayed history)
+  channel?: string;  // for replay (which channel the msgs belong to)
   err?: string;
+  // Phase 6.5: mesh-relay metadata (TRANSPORT-LEVEL, NOT part of the signed MeshMsg — a relay peer
+  // forwards the original signed message untouched; the visited-set + hop-count prevent loops).
+  // `to` is the final destination agent id (== msg.to). `visited` is the set of peer ids that have
+  // already handled this frame (senders + prior relays) — a relay peer must NOT re-relay to anyone
+  // in visited. `hops` counts relay legs; capped at MeshConfig.maxHops (hard drop — loop-prevention).
+  relay?: { hops: number; visited: string[]; to: string };
 }
 
 /** The unified transport abstraction (local Unix socket OR remote hub — same API). */

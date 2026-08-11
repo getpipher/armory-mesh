@@ -87,6 +87,54 @@
 
 **Phase 6 design:** the hub is a **dumb relay** — it never sees the project key; messages stay signed + nonce-protected (peers verify on receive). The hub only needs `PI_MESH_AUTH_TOKEN` (the LAN gate). Defense in depth: a rogue can't join without the token, AND couldn't forge signed messages even if it could. The HubTransport doubles as the registry (the hub holds the live peer list; SSE `peer-joined/left/updated` events keep each peer's view current). **Known limitation (Phase 6.5):** channel logs are per-machine local files, so cross-machine late-joiner catch-up (a peer on machine X replaying messages persisted on machine Y) isn't solved by the hub relay alone — the hub doesn't store messages. The `replay`/`replay-resp` Frame kinds (reserved since Phase 4) are the planned fix, or the hub stores+replays.
 
+### Phase 6.5 — mesh relay + hub failover + cross-machine replay ✅ (2026-08-11)
+**Goal:** close the cross-machine gaps left open by Phase 6 — hub-less mesh relay (loop-prevention),
+standby-hub failover, + cross-machine late-joiner replay.
+- [x] **Mesh relay** (DESIGN §3.1/§5.5): a `relay` field on the `Frame` (transport-level, NOT part of the
+  signed `MeshMsg`) carries `{ hops, visited, to }`. `MeshCore.send({target})` tries direct; on failure
+  (or a peer in `config.unreachablePeers` — e.g. a git-synced local-mode peer on another machine)
+  it relays via a live peer. `handleFrame` processes in-transit relay frames: deliver directly (strip
+  relay), re-relay via a non-visited peer (hops+1), or drop at `config.maxHops`. The visited-set +
+  hop-count are the loop-prevention guarantee. A relay peer forwards the original SIGNED message
+  untouched (end-to-end auth; the relay metadata is unsigned but hop-count bounds abuse).
+- [x] **Hub failover** (DESIGN §5.7): `config.hubUrls` (ordered failover chain; overrides `hubUrl`). The
+  `HubTransport` tracks `consecutiveFailures`; after `config.hubFailoverThreshold` (default 3) SSE
+  close/error events it rotates to the next hub (round-robin) + re-registers. A `reconnectPending`
+  guard prevents double-scheduling when both `close` + `error` fire for one failure.
+- [x] **Cross-machine late-joiner replay** (DESIGN §3.5): the hub stores persisted-channel messages
+  in an in-memory bounded buffer (`HubOpts.persistChannels` / `maxChannelLogEntries`, default 1000).
+  On `/join` the peer sends its per-channel cursors; the hub flushes `replay` SSE events for stored
+  msgs with `ts > cursor`. The `HubTransport` forwards replay frames to `handleFrame` (kind `"replay"`),
+  which verifies + dedups (markSeen) + queues each — the 02:00→09:00 cross-machine scenario. In hub
+  mode, broadcasts now use one `POST /send` (the hub routes + stores) so an alone sender's finding
+  still reaches the durable store.
+- [x] Smoke test: `scripts/smoke-phase6_5.ts` — relay delivery (A→B→C with A partitioned from C) +
+  loop-prevention (undeliverable target drops at maxHops, no hang/crash); hub failover (stop hub1 →
+  both rotate to hub2 + round-trip); cross-machine replay (A broadcasts alone → hub stores → B
+  starts later + receives; a forward-cursor late-joiner does NOT re-receive).
+
+**Phase 6.5 design:** the relay is a best-effort fallback on direct-transport failure (the trigger
+is `transport.send` throwing / a known-unreachable peer). Loop-prevention is the hardened guarantee
+— the visited-set stops re-relaying to peers already in the path; the hop-count is the hard cap.
+Hub failover rotates the whole transport (SSE + POST base) to the next hub; the new hub replays its
+own buffer (dedup handles overlap with the prior hub). Cross-machine replay puts the hub in the
+durable-store role for hub mode (local mode still uses the shared filesystem log); messages stay
+signed end-to-end (the hub stores opaque signed payloads it already sees in transit).
+
+**Known limitations (Phase 7/8):**
+- `fleet-state.jsonl` is still PER-MACHINE. The hub stores CHANNEL messages (so `mesh_get` is
+  cross-machine) but not the fleet-state ledger. Cross-machine `mesh_dup_check` therefore checks only
+  the local ledger — a finding banked on machine Y isn't in machine X's overlap check unless X also
+  received + materialized it. Fix options for Phase 7/8: materialize received `finding` msgs into the
+  local ledger, OR have the hub store fleet-state too. (The channel broadcast + replay already make
+  the finding VISIBLE cross-machine via `mesh_get({channel:"#dup-check"})`.)
+- Reconnect/failover re-joins with `cursors: {}` (full replay); the `replayed` flag on the hub's HubPeer
+  suppresses replay on reconnect-to-same-hub, so a genuine disconnect gap (msgs sent while the SSE
+  was down) is not back-filled except on failover to a fresh hub. Phase 7 could pass live cursors on
+  reconnect + reset the `replayed` flag.
+- Hub channel logs are in-memory only (lost on hub restart); a long-running dogfood may want a
+  disk-backed hub store (Phase 7).
+
 ### Phase 7 — hardening pass 🚧
 - [ ] Per-channel rate cap (default 10 msg/s) + per-message size cap (256KB) enforcement.
 - [ ] Fuzz the transport (malformed frames, oversized, replayed nonces, spoofed signatures).
@@ -114,6 +162,7 @@
 | 4 persistence + replay | ✅ done (2026-08-10) | smoke4 passed |
 | 5 fleet-state primitives | ✅ done (2026-08-10) | smoke5 passed |
 | 6 remote hub + unified transport | ✅ done (2026-08-10) | smoke6 passed; mesh relay + failover deferred to 6.5 |
+| 6.5 mesh relay + hub failover + cross-machine replay | ✅ done (2026-08-11) | smoke6_5 passed (relay + loop-prevention, failover, replay) |
 | 7 hardening pass | 🚧 | — |
 | 8 dogfood in bug-bounty fleet | 🚧 | the graduation gate |
 | 9 publish | 🚧 | — |

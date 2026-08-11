@@ -80,17 +80,25 @@ export async function createMeshCore(opts: {
   const { config, self } = opts;
   const getCtxUsage = opts.getCtxUsage ?? (() => undefined);
   const auth: Auth = createAuth({ project: config.project, selfId: self.id });
+  // Phase 6.5: resolve the hub failover chain. hubUrls (array) takes precedence; fall back to a
+  // single hubUrl. Empty/absent => local Unix-socket mode.
+  const hubUrls = config.hubUrls && config.hubUrls.length > 0 ? config.hubUrls : config.hubUrl ? [config.hubUrl] : undefined;
+  const isHubMode = !!(hubUrls && hubUrls.length > 0 && config.authToken);
+  // Phase 6.5: peers this session can't reach directly (cross-machine, git-synced local mode) —
+  // `send({target})` relays via a live peer instead of attempting a doomed direct connection.
+  const unreachablePeers = new Set(config.unreachablePeers ?? []);
   let registry: Registry;
   let transport: Transport;
-  if (config.hubUrl && config.authToken) {
-    // Phase 6: hub mode — one HubTransport object serves as BOTH transport + registry (the hub
+  if (isHubMode) {
+    // Phase 6/6.5: hub mode — one HubTransport object serves as BOTH transport + registry (the hub
     // holds the live registry; no local file registry). Same tool API as local mode.
     const hub = createHubTransport({
-      hubUrl: config.hubUrl,
-      authToken: config.authToken,
+      hubUrls: hubUrls!,
+      authToken: config.authToken!,
       agentId: self.id,
       self,
       maxMessageBytes: config.maxMessageBytes,
+      failoverThreshold: config.hubFailoverThreshold ?? 3,
     });
     registry = hub as unknown as Registry;
     transport = hub as unknown as Transport;
@@ -163,7 +171,7 @@ export async function createMeshCore(opts: {
     cachedPeers = await registry.refreshPool();
   }
 
-  if (config.hubUrl && config.authToken) {
+  if (isHubMode) {
     // Hub mode: the HubTransport is already created above; wire its onFrame to our handler.
     transport.onFrame(handleFrame);
   } else {
@@ -178,10 +186,31 @@ export async function createMeshCore(opts: {
   }
 
   function handleFrame(frame: Frame, _fromSocket: string): void {
+    // Phase 6.5: cross-machine late-joiner replay — the hub streams persisted channel history.
+    // Each replayed message is verified + deduped + queued exactly like a live message.
+    if (frame.kind === "replay" && Array.isArray(frame.msgs)) {
+      for (const m of frame.msgs) {
+        if (!m || m.type === "heartbeat") continue;
+        if (!auth.verify(m)) continue;
+        if (!markSeen(m.id)) continue;
+        inbound.push(m);
+        if (inbound.length > 4096) inbound.splice(0, inbound.length - 4096);
+        if (m.channel && m.ts > (cursors[m.channel] ?? -Infinity)) cursors[m.channel] = m.ts;
+      }
+      return;
+    }
     if (frame.kind !== "msg" || !frame.msg) return; // Phase 1/2 handle 'msg' only
     const msg = frame.msg;
     // Auth-by-default: verify signature + nonce. A tampered/unsigned/replayed frame is DROPPED.
     if (!auth.verify(msg)) return;
+    // Phase 6.5: mesh relay — a frame in transit (destination is another peer). Deliver or re-relay;
+    // never queue (it's not for us). The visited-set + hop-count prevent loops (DESIGN §5.5).
+    if (frame.relay && frame.relay.to !== self.id) {
+      void handleRelay(frame);
+      return;
+    }
+    // (frame.relay.to === self.id => final delivery: fall through to normal processing; the relay
+    // metadata is transport-level + discarded here.)
     // Heartbeats update the live peer view (liveness + context-usage broadcast) and are NOT queued.
     if (msg.type === "heartbeat") {
       const card = msg.payload as HeartbeatCard | undefined;
@@ -204,6 +233,57 @@ export async function createMeshCore(opts: {
     if (msg.channel && msg.ts > (cursors[msg.channel] ?? -Infinity)) cursors[msg.channel] = msg.ts;
   }
 
+  // ── Phase 6.5: mesh relay (hub-less cross-machine, loop-prevention) ──────────────────────
+  function isUnreachable(id: string): boolean { return unreachablePeers.has(id); }
+
+  /** Pick a live peer to relay through (excludes self, the target, + already-visited peers). */
+  function pickRelayVia(target: string, visited: Set<string>): string | undefined {
+    for (const p of livePeers()) {
+      if (p.id === self.id || p.id === target) continue;
+      if (visited.has(p.id)) continue;
+      if (p.alive === false) continue;
+      return p.id;
+    }
+    return undefined;
+  }
+
+  /** Deliver a targeted frame, falling back to mesh relay if the direct path is unavailable. */
+  async function deliverWithRelay(target: string, frame: Frame): Promise<void> {
+    if (!isUnreachable(target)) {
+      try { await transport.send(target, frame); return; }
+      catch { /* direct failed — fall back to relay */ }
+    }
+    const via = pickRelayVia(target, new Set([self.id, target]));
+    if (!via) {
+      throw new Error(
+        isUnreachable(target)
+          ? `transport: no relay peer for unreachable target "${target}"`
+          : `transport: direct send failed + no relay peer for "${target}"`,
+      );
+    }
+    const relayFrame: Frame = { ...frame, relay: { hops: 1, visited: [self.id, target], to: target } };
+    await transport.send(via, relayFrame);
+  }
+
+  /** Process a relay frame in transit: deliver directly, re-relay via another peer, or drop (loop-prevention). */
+  async function handleRelay(frame: Frame): Promise<void> {
+    const relay = frame.relay!;
+    const to = relay.to;
+    // Try direct delivery (unless we know it's unreachable from us).
+    if (!isUnreachable(to)) {
+      try { await transport.send(to, { ...frame, relay: undefined }); return; }
+      catch { /* direct failed — re-relay */ }
+    }
+    // Can't deliver directly — re-relay via a live peer not already visited, unless the hop cap is hit.
+    if (relay.hops >= config.maxHops) return; // hard drop — loop-prevention (DESIGN §5.5)
+    const visited = new Set(relay.visited);
+    visited.add(self.id);
+    const via = pickRelayVia(to, visited);
+    if (!via) return; // no relay peer available — drop (no loop, just undeliverable)
+    const relayFrame: Frame = { ...frame, relay: { hops: relay.hops + 1, visited: [...visited], to } };
+    try { await transport.send(via, relayFrame); } catch { /* best-effort */ }
+  }
+
   let nonceCounter = 0;
   function nextNonce(): number {
     return ++nonceCounter;
@@ -214,11 +294,19 @@ export async function createMeshCore(opts: {
     if (!(await auth.ensureAllowlisted(self.id))) {
       throw new Error(`armory-mesh: agent "${self.id}" is not in the project allowlist for "${config.project}".`);
     }
-    await registry.join(self);
-    await refreshCachedPeers();
+    // Phase 6.5: load the saved per-channel cursors BEFORE join so the hub can replay cross-machine
+    // history from them (the join request carries them; the hub streams `replay` frames over SSE).
+    const savedCursors = await loadCursors(config.project, self.id).catch(() => ({}));
+    for (const [c, ts] of Object.entries(savedCursors)) cursors[c] = ts;
+    // Open the inbound transport BEFORE joining (hub mode: SSE must be open so the hub can stream
+    // replay frames on /join; local mode: the socket server listens for inbound frames).
     await transport.start();
-    // Phase 4: late-joiner catch-up — replay each persisted channel's shared log from this peer's
-    // last-seen cursor (a fresh session catches up on the 02:00 finding broadcast at 09:00).
+    await registry.join(self, savedCursors);
+    await refreshCachedPeers();
+    // Phase 4 (local mode): late-joiner catch-up — replay each persisted channel's SHARED log from
+    // this peer's last-seen cursor (a fresh session catches up on the 02:00 finding at 09:00). In
+    // hub mode the cross-machine replay already arrived via the SSE `replay` frames; this is a no-op
+    // (no shared local log) + dedup (markSeen) guards against any overlap.
     await catchUpPersistedChannels();
     // Cursor persistence: save cursors periodically + on shutdown (so a restarted session resumes).
     cursorTimer = setInterval(() => { saveCursors(config.project, self.id, cursors).catch(() => {}); }, 2000);
@@ -272,8 +360,9 @@ export async function createMeshCore(opts: {
   /** Phase 4: replay each persisted channel's shared log from this peer's saved cursor; merge new
    *  messages into the inbound queue (dedup by id). */
   async function catchUpPersistedChannels(): Promise<void> {
-    const saved = await loadCursors(config.project, self.id).catch(() => ({}));
-    for (const [c, ts] of Object.entries(saved)) cursors[c] = ts;
+    // The cursors were already loaded in start() (so the hub join could carry them for cross-machine
+    // replay). Here we only read the SHARED local log (local mode) from those cursors; in hub mode
+    // there's no shared local log, so this is a no-op (the hub replay already handled catch-up).
     for (const channel of config.persistChannels) {
       const sinceTs = cursors[channel] ?? -Infinity;
       let msgs: MeshMsg[] = [];
@@ -398,9 +487,16 @@ export async function createMeshCore(opts: {
       appendChannelLog(config.project, msg, config.maxChannelLogBytes).catch(() => {});
     }
     if (args.target) {
-      await transport.send(args.target, frame);
+      // Phase 6.5: try direct; on failure (or known-unreachable) fall back to mesh relay via a live peer.
+      await deliverWithRelay(args.target, frame);
+    } else if (isHubMode) {
+      // Hub mode: ONE POST /send — the hub routes to subscribers AND stores persisted-channel
+      // messages for cross-machine late-joiner replay. This matters when the sender is the only
+      // peer online (a 02:00 finding broadcast with no subscribers must still reach the hub's
+      // durable store so a 09:00 session catches up).
+      await transport.broadcast(channel, frame);
     } else {
-      // Phase 3 routing: deliver only to peers subscribed to the channel.
+      // Local mode: route directly to known subscribers (the shared-filesystem pool).
       //   - default channels → all live peers (everyone is subscribed)
       //   - per-target channels → only known subscribers (gossiped via heartbeats / registry)
       const targets = routeTargets(channel, livePeers(), self.id);
