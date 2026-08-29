@@ -47,6 +47,7 @@ async function main(): Promise<void> {
   let setWidgetCalls = 0;
   const fakePi: any = {
     registerTool() {},
+    registerCommand() {}, // /mesh is TUI-only; the stub ignores it
     on(_event: string, handler: (e: unknown, ctx: unknown) => Promise<void>) {
       (fakePi._handlers ??= {})[_event] = handler;
     },

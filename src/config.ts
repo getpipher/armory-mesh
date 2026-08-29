@@ -1,5 +1,8 @@
-// armory-mesh — config (env vars + defaults).
-// SCAFFOLD (Phase 0). Used from Phase 1 on.
+// armory-mesh — config (env vars + defaults) + project-scoped mesh config discovery.
+// Used from Phase 1 on. Phase 8: .pi/mesh.json ancestor-walk (findMeshConfig/findMeshConfigPath).
+
+import fs from "node:fs";
+import path from "node:path";
 
 export interface MeshConfig {
   project: string;            // the project pool (peers in the same project discover each other)
@@ -21,6 +24,42 @@ export interface MeshConfig {
   // Phase 6.5: after this many consecutive SSE failures against the current hub, fail over to the
   // next hub in hubUrls. Default 3.
   hubFailoverThreshold?: number;
+}
+
+/**
+ * Phase 8: find the nearest-ancestor `.pi/mesh.json` from `dir` (inclusive). Project-scoped fleet
+ * config: a workspace root drops ONE file and every session fired in any child folder joins the
+ * same mesh pool — cross-hunt dup-check with zero env vars. Returns the FILE PATH of the nearest
+ * VALID mesh.json (malformed files are skipped — the walk continues) or null.
+ * (Precedence for the project id lives at the caller: PI_MESH_PROJECT env > mesh.json > cwd basename.)
+ */
+export function findMeshConfigPath(dir: string): string | null {
+  let cur = dir;
+  for (;;) {
+    const p = path.join(cur, ".pi", "mesh.json");
+    if (fs.existsSync(p)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(p, "utf-8")) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return p;
+      } catch {
+        // malformed mesh.json — skip it, keep walking up
+      }
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
+
+/** Read + validate the nearest-ancestor `.pi/mesh.json` (null when none is valid). */
+export function findMeshConfig(dir: string): Record<string, unknown> | null {
+  const p = findMeshConfigPath(dir);
+  if (!p) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 export const defaultMeshConfig = (overrides: Partial<MeshConfig> = {}): MeshConfig => ({

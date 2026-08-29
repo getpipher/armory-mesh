@@ -43,6 +43,7 @@ function criterion1(): void {
     registerTool(tool: { name: string }) {
       tools.push(tool.name);
     },
+    registerCommand() {}, // /mesh is TUI-only; the stub ignores it
     on(event: string, handler: unknown) {
       (handlers[event] ??= []).push(handler);
     },

@@ -46,7 +46,7 @@
     ]
   },
   "scripts": {
-    "test": "pnpm test:smoke && pnpm test:smoke2 && pnpm test:smoke2-widget && pnpm test:smoke3 && pnpm test:smoke4 && pnpm test:smoke5 && pnpm test:smoke6 && pnpm test:smoke6_5 && pnpm test:smoke7 && pnpm test:smoke8",
+    "test": "pnpm test:smoke && pnpm test:smoke2 && pnpm test:smoke2-widget && pnpm test:smoke3 && pnpm test:smoke4 && pnpm test:smoke5 && pnpm test:smoke6 && pnpm test:smoke6_5 && pnpm test:smoke7 && pnpm test:smoke8 && pnpm test:smoke-doctor",
     "test:smoke": "jiti scripts/smoke-phase1.ts",
     "test:smoke2": "jiti scripts/smoke-phase2.ts",
     "test:smoke2-widget": "jiti scripts/smoke-phase2-widget.ts",
@@ -57,7 +57,8 @@
     "test:smoke6": "jiti scripts/smoke-phase6.ts",
     "test:smoke6_5": "jiti scripts/smoke-phase6_5.ts",
     "test:smoke7": "jiti scripts/smoke-phase7.ts",
-    "test:smoke8": "jiti scripts/smoke-phase8.ts"
+    "test:smoke8": "jiti scripts/smoke-phase8.ts",
+    "test:smoke-doctor": "jiti scripts/smoke-doctor.ts"
   },
   "devDependencies": {
     "jiti": "^2.7.0"

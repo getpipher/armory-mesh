@@ -13,35 +13,18 @@ import {
   createMeshCore, setMesh,
   type MeshCore,
 } from "../src/mesh.js";
-import { defaultMeshConfig } from "../src/config.js";
-import { paths } from "../src/paths.js";
+import { defaultMeshConfig, findMeshConfig, findMeshConfigPath } from "../src/config.js";
+import { paths, MESH_ROOT } from "../src/paths.js";
+import { runDoctor, formatDoctorReport } from "../src/doctor.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 
 // ─── Phase 8: project-scoped mesh config (.pi/mesh.json) ────────────────────
-/**
- * Find the nearest-ancestor `.pi/mesh.json` from `dir` (inclusive). Project-scoped fleet config:
- * a workspace root (e.g. a bug-bounty bucket) drops one file and EVERY session fired in any child
- * folder joins the same mesh pool — cross-hunt dup-check with zero env vars. Precedence for the
- * project id: PI_MESH_PROJECT env > mesh.json.project > cwd basename.
- */
-export function findMeshConfig(dir: string): Record<string, unknown> | null {
-  let cur = dir;
-  for (;;) {
-    const p = path.join(cur, ".pi", "mesh.json");
-    try {
-      const parsed = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    } catch {
-      // no mesh.json at this level — keep walking up
-    }
-    const parent = path.dirname(cur);
-    if (parent === cur) return null;
-    cur = parent;
-  }
-}
+// findMeshConfig lives in src/config.ts (src/doctor needs it too); re-exported here so
+// smoke-phase8's import path keeps working.
+export { findMeshConfig, findMeshConfigPath } from "../src/config.js";
 
 export default function meshExtension(pi: ExtensionAPI): void {
   // Phase 1: the 4 core tools (coms parity).
@@ -58,6 +41,73 @@ export default function meshExtension(pi: ExtensionAPI): void {
   pi.registerTool(meshHandoff);
   pi.registerTool(meshFleetState);
   pi.registerTool(meshChannels);
+
+  // Phase 8 refine: /mesh — human surface (status + doctor). Knowledge tools stay model-driven;
+  // the slash surface is for things a human wants WITHOUT a model round-trip (esp. diagnostics).
+  pi.registerCommand("mesh", {
+    description: "Mesh pool status (/mesh) + install/runtime diagnostics (/mesh doctor)",
+    handler: async (args, ctx) => {
+      const sub = (args ?? "").trim().split(/\s+/)[0];
+      if (!core) {
+        if (ctx.hasUI) ctx.ui.notify("mesh: not started in this session (check startup errors)", "warning");
+        return;
+      }
+      if (sub === "doctor") {
+        try {
+          const cfg = core.config;
+          const hubUrls = cfg.hubUrls ?? (cfg.hubUrl ? [cfg.hubUrl] : []);
+          const isHub = hubUrls.length > 0 && !!cfg.authToken;
+          const hubFetch = isHub
+            ? async () => {
+                for (const u of hubUrls) {
+                  try {
+                    const res = await fetch(u.replace(/\/$/, "") + "/events", {
+                      headers: { "x-mesh-token": cfg.authToken ?? "" },
+                      signal: AbortSignal.timeout(1500),
+                    });
+                    void res.body?.cancel().catch(() => {});
+                    return true; // any HTTP response = the hub is reachable
+                  } catch { /* try the next hub */ }
+                }
+                return false;
+              }
+            : undefined;
+          const report = await runDoctor({
+            cwd: ctx.cwd,
+            project: cfg.project,
+            selfId: core.self.id,
+            selfName: cfg.agentName,
+            coreStarted: true,
+            mode: isHub ? "hub" : "local",
+            config: cfg,
+            hubUrls: isHub ? hubUrls : undefined,
+            listPeers: () => core!.list(),
+            meshRoot: MESH_ROOT,
+            trustFile: path.join(os.homedir(), ".pi", "agent", "trust.json"),
+            env: { PI_MESH_PROJECT: process.env.PI_MESH_PROJECT, PI_MESH_AGENT_NAME: process.env.PI_MESH_AGENT_NAME },
+            hubFetch,
+          });
+          const msg = formatDoctorReport(report);
+          if (ctx.hasUI) ctx.ui.notify(msg, report.checks.some((c) => c.status === "fail") ? "warning" : "info");
+        } catch (e) {
+          if (ctx.hasUI) ctx.ui.notify(`mesh doctor failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+        }
+        return;
+      }
+      if (!sub) {
+        const peers = core.snapshotPeers();
+        const lines = [
+          `mesh "${core.config.project}" · ${peers.length} peer${peers.length === 1 ? "" : "s"} · ${core.config.hubUrls?.length || core.config.hubUrl ? "hub" : "local"} mode`,
+          ...peers.map((p) => `  ${p.name} ${p.model} ctx:${p.contextUsage != null ? Math.round(p.contextUsage) + "%" : "--"}${p.claimedTarget ? ` ⟨${p.claimedTarget}⟩` : ""}`),
+          "",
+          "/mesh doctor — full install + runtime diagnostics",
+        ];
+        if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+      if (ctx.hasUI) ctx.ui.notify(`unknown /mesh subcommand "${sub}" — try /mesh or /mesh doctor`, "warning");
+    },
+  });
 
   let core: MeshCore | null = null;
 
