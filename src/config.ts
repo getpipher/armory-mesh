@@ -30,6 +30,17 @@ export interface MeshConfig {
 }
 
 /**
+ * Per-session opt-out: `PI_MESH_OFF=1` (or true/yes/on, case-insensitive) keeps the package
+ * installed but the extension registers NOTHING — no tools, no widget, no /mesh command, no
+ * Unix socket, no project key. The session is simply not in any mesh. Checked FIRST in the
+ * extension entry (extensions/mesh.ts) before any registration or state creation.
+ */
+const TRUTHY = new Set(["1", "true", "yes", "on"]);
+export function meshDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return TRUTHY.has((env.PI_MESH_OFF ?? "").trim().toLowerCase());
+}
+
+/**
  * Phase 8: find the nearest-ancestor `.pi/mesh.json` from `dir` (inclusive). Project-scoped fleet
  * config: a workspace root drops ONE file and every session fired in any child folder joins the
  * same mesh pool — cross-hunt dup-check with zero env vars. Returns the FILE PATH of the nearest

@@ -64,6 +64,8 @@ mesh bug-bounty-fleet · 6 peers
 
 Presence updates every 2 seconds (name, model, live context-window usage, claimed target, last-seen). The widget collapses past `PI_MESH_WIDGET_MAX_ROWS` (default 10), most-recently-active first.
 
+Running a session you **don't** want in the mesh at all? `PI_MESH_OFF=1 pi …` — the package stays installed, but that session registers no mesh surface (no tools, no widget, no socket, no key).
+
 **Who can see whom:** a session joins the pool named by — in order of precedence — the `PI_MESH_PROJECT` env var, a [`.pi/mesh.json`](#project-scoped-pools) anywhere up its folder tree, or its working folder's basename. **Same pool = visible to each other. Different pool = complete strangers.** Knowledge itself only moves when a session calls a tool — presence metadata (heartbeats) is the only automatic traffic.
 
 ## The tools (injected into every session)
@@ -135,6 +137,7 @@ Precedence: `PI_MESH_PROJECT` env → nearest `.pi/mesh.json` → folder basenam
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `PI_MESH_OFF` | — | Per-session opt-out: `1`/`true`/`yes`/`on` → this session registers no mesh surface (package stays installed) |
 | `PI_MESH_PROJECT` | folder basename | Pool id |
 | `PI_MESH_AGENT_NAME` | random | Readable name in the widget |
 | `PI_MESH_HUB_URL` / `PI_MESH_HUB_URLS` | — | Hub endpoint(s) — cross-machine mode |

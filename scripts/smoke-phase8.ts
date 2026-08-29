@@ -5,7 +5,8 @@
 //   3. No mesh.json anywhere up the tree → null (cwd-basename fallback applies in the extension).
 // Run: `pnpm test:smoke8` (jiti).
 
-import { findMeshConfig } from "../extensions/mesh.js";
+import { findMeshConfig, default as meshExtension } from "../extensions/mesh.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,6 +44,24 @@ try {
   } finally {
     fs.rmSync(clean, { recursive: true, force: true });
   }
+
+  // 4. PI_MESH_OFF — installed but opted out: the extension registers NOTHING (no tools, no
+  //    /mesh command, no session handlers), so the session joins no mesh and creates no state.
+  let tools = 0, commands = 0, events = 0;
+  const stub = {
+    registerTool: () => { tools++; },
+    registerCommand: () => { commands++; },
+    on: () => { events++; },
+  } as unknown as ExtensionAPI;
+  process.env.PI_MESH_OFF = "1";
+  meshExtension(stub);
+  check("PI_MESH_OFF=1 → no tools registered", tools === 0);
+  check("PI_MESH_OFF=1 → no /mesh command", commands === 0);
+  check("PI_MESH_OFF=1 → no session handlers", events === 0);
+  delete process.env.PI_MESH_OFF;
+  meshExtension(stub);
+  check("without PI_MESH_OFF → full tool surface (11)", tools === 11);
+  check("without PI_MESH_OFF → /mesh + session handlers", commands === 1 && events === 2);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

@@ -13,7 +13,7 @@ import {
   createMeshCore, setMesh,
   type MeshCore,
 } from "../src/mesh.js";
-import { defaultMeshConfig, findMeshConfig, findMeshConfigPath } from "../src/config.js";
+import { defaultMeshConfig, findMeshConfig, findMeshConfigPath, meshDisabled } from "../src/config.js";
 import { paths, MESH_ROOT } from "../src/paths.js";
 import { runDoctor, formatDoctorReport } from "../src/doctor.js";
 import os from "node:os";
@@ -27,6 +27,11 @@ import crypto from "node:crypto";
 export { findMeshConfig, findMeshConfigPath } from "../src/config.js";
 
 export default function meshExtension(pi: ExtensionAPI): void {
+  // Per-session opt-out: PI_MESH_OFF=1 keeps the package installed but this session registers
+  // NOTHING — no tools, no widget, no /mesh, no socket, no project key, no state. Must run before
+  // any registration; a session started with the flag set was never in a mesh.
+  if (meshDisabled()) return;
+
   // Phase 1: the 4 core tools (coms parity).
   pi.registerTool(meshList);
   pi.registerTool(meshSend);
