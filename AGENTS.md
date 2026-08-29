@@ -8,13 +8,16 @@ A pi extension package that lets N parallel pi sessions talk to each other **pee
 
 ## Current state (2026-08-11)
 
-Phases 1-6.5 built + committed on `feat/phase-1-coms-parity` (7 commits, not merged). All 11 tools
-implemented. 8 smoke suites green (`pnpm test`). Local (Unix-socket) + remote (hub) modes both
+Phases 1-7 built + committed on `feat/phase-1-coms-parity` (8 commits, not merged). All 11 tools
+implemented. 9 smoke suites green (`pnpm test`). Local (Unix-socket) + remote (hub) modes both
 working with one MeshCore codepath. Phase 6.5 closed the cross-machine gaps: mesh relay (hub-less,
 visited-set + hop-count loop-prevention), hub failover (standby hub + client fail-over), and
-cross-machine late-joiner replay (hub-stored channel logs). Next: Phase 7 (hardening — per-channel
-rate cap + 256KB size cap enforcement, transport fuzz, observability hooks, security review), then
-Phase 8 (bug-bounty dogfood = graduation gate), Phase 9 (publish).
+cross-machine late-joiner replay (hub-stored channel logs). Phase 7 hardened the stack: per-channel
+rate cap (heartbeat-exempt control plane), 256KB size cap (fail-fast + wire), transport fuzz
+(malformed/oversized/spoofed/replayed all dropped), ObsEvent observability hooks, SECURITY.md
+review, cross-machine fleet-state materialization (hub replay → ledger → dup_check overlap), and
+reconnect cursor back-fill. Next: Phase 8 (bug-bounty dogfood = graduation gate), Phase 9
+(publish).
 
 **DESIGN.md + ROADMAP.md are the spec** — build against them, don't re-derive. The hardened
 guarantees (DESIGN §5) are never-compromise: auth-by-default, signed+nonce, liveness+eviction,

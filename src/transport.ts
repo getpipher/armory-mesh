@@ -334,6 +334,9 @@ export interface HubTransportOpts {
   failoverThreshold: number;   // consecutive SSE failures before rotating to the next hub
   onFrame?: (frame: Frame, from: string) => void | Promise<void>;
   onPeerEvent?: (type: "peer-joined" | "peer-left" | "peer-updated", peer: Peer) => void;
+  // Phase 7: live per-channel cursors, passed on RECONNECT so the hub re-replays from the gap
+  // (not the full history) — back-fills msgs sent while the SSE was down.
+  getCursors?: () => Record<string, number>;
 }
 
 export function createHubTransport(opts: HubTransportOpts): Transport & Registry {
@@ -371,7 +374,8 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
       consecutiveFailures = 0;
       // On a reconnect (not the initial connect) re-register on this hub — it may have evicted us
       // while the SSE was down, and after a failover we are now on a hub that has never seen us.
-      if (!firstConnect) void post("/join", { agentId, peer: self, cursors: {} });
+      // Phase 7: pass the LIVE cursors so the hub re-replays only the disconnect gap.
+      if (!firstConnect) void post("/join", { agentId, peer: self, cursors: opts.getCursors?.() ?? {} });
       firstConnect = false;
       res.on("data", (chunk: string) => {
         buf += chunk;

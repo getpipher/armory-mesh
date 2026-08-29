@@ -187,11 +187,13 @@ export function createHubServer(opts: HubOpts): HubServer {
         const body = (await readJson(req)) as { agentId?: string; peer?: Peer; cursors?: Record<string, number> };
         if (!body.peer || !body.agentId) { res.writeHead(400); res.end("{}"); return; }
         const hp = peers.get(body.agentId);
-        if (hp) { hp.peer = body.peer; hp.lastSeen = Date.now(); hp.cursors = body.cursors; }
+        if (hp) { hp.peer = body.peer; hp.lastSeen = Date.now(); hp.cursors = body.cursors; hp.replayed = false; }
         else peers.set(body.agentId, { peer: body.peer, res: null, lastSeen: Date.now(), cursors: body.cursors });
         broadcast({ type: "peer-joined", peer: body.peer }, body.agentId);
-        // Phase 6.5: flush cross-machine replay if the SSE stream is already connected (join after
+        // Phase 6.5/7: flush cross-machine replay if the SSE stream is already connected (join after
         // events). If SSE isn't connected yet, flushReplay is deferred to the /events handler.
+        // Phase 7: /join RESETS the replayed flag, so a reconnect re-flushes from the (live) cursors
+        // — back-filling the disconnect gap instead of silently skipping it.
         flushReplay(peers.get(body.agentId)!);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ peers: [...peers.values()].map((p) => p.peer) }));

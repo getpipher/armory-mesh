@@ -135,11 +135,46 @@ signed end-to-end (the hub stores opaque signed payloads it already sees in tran
 - Hub channel logs are in-memory only (lost on hub restart); a long-running dogfood may want a
   disk-backed hub store (Phase 7).
 
-### Phase 7 — hardening pass 🚧
-- [ ] Per-channel rate cap (default 10 msg/s) + per-message size cap (256KB) enforcement.
-- [ ] Fuzz the transport (malformed frames, oversized, replayed nonces, spoofed signatures).
-- [ ] Observability hooks — emit `ObsEvent`s compatible with `disler/pi-agent-observability`.
-- [ ] Security review: the auth model, the key distribution, the allowlist.
+### Phase 7 — hardening pass ✅ (2026-08-11)
+**Goal:** enforce the remaining DESIGN §5 guarantees (size + rate caps, observability), fuzz the
+transport, security-review the stack, + close the feasible Phase 6.5 gaps.
+- [x] Per-message size cap: `mesh_send` pre-serializes + fails fast with byte counts (`message
+  exceeds cap (N > M bytes)`); the transport's length-prefix check already rejects oversized frames
+  pre-parse. Both layers fuzzed.
+- [x] Per-channel rate cap: token bucket per channel (`channelRatePerSec`, default 10 msg/s) on
+  SEND — burst up to the rate, refill continuously; rejected sends throw a clear error + are NOT
+  persisted. **`#heartbeats` is exempt (control plane)** — a throttled heartbeat would silently
+  evict the peer from every pool; inbound heartbeats are O(1) so the exemption opens no flood.
+- [x] Transport fuzz (`scripts/smoke-phase7.ts`): raw-frame injection via the same primitives a
+  rogue local process would use — oversized length prefix (rejected pre-parse), malformed JSON
+  (dropped, peer keeps serving), spoofed signature (dropped BEFORE the nonce window — no nonce
+  poisoning), replayed nonce (arrives exactly once). Peer survives every case.
+- [x] Observability hooks: `ObsEvent` (flat + queryable, `source_app`/`session_id`/`event_type`/
+  `timestamp` + event-specific TOP-LEVEL fields — the disler/pi-agent-observability hook-event
+  shape) + `core.onObs` sink. Emitted: `mesh_send` / `mesh_receive` / `mesh_relay` (both sender
+  + relay-peer sides) / `mesh_replay` / `mesh_evict` / `mesh_drop` (bad-signature, duplicate,
+  rate-limit, oversize, hop-limit, no-relay-peer). Observability can never break the mesh
+  (sink throws are swallowed).
+- [x] Security review: `SECURITY.md` — auth model (key=identity, sig-before-nonce), key
+  distribution table (local/hub/LAN gate), allowlist bootstrap, relay trust (unsigned metadata,
+  hop-count as the hard cap), hub trust (relay + store, plain-HTTP residual), flooding bounds,
+  residual risks.
+- [x] Phase 6.5 gap (a) — cross-machine fleet-state: received `finding` msgs are MATERIALIZED into
+  the local ledger (hub mode only — local mode shares one ledger file) with dedup by
+  (target, title, session). A finding banked on machine Y now feeds machine X's `mesh_dup_check`
+  overlap check. Smoke: hub replay → materialized → `mesh_dup_check` returns overlap=true; a
+  re-received finding does NOT duplicate the entry.
+- [x] Phase 6.5 gap (b) — reconnect cursors: the hub transport re-joins with the LIVE cursors
+  (`getCursors`) on reconnect, + the hub's `/join` resets the `replayed` flag so the disconnect gap
+  is re-flushed (back-fill) instead of silently skipped.
+- [ ] Phase 6.5 gap (c) — hub disk-backed store: DEFERRED to Phase 8 (in-memory is fine for a LAN
+  hub that stays up; the dogfood decides if a restart-durable hub store is worth the complexity).
+
+**Phase 7 design:** the rate cap is OUTBOUND-only (the sender-side control; inbound is already
+bounded by the queue cap). Sig verification ordering (before nonce) is load-bearing — a spoofed
+frame must not advance the receiver's nonce window (else an attacker could lock a sender out by
+burning its nonces). Materialization is hub-mode-only: local mode shares one ledger file per
+machine, so receiver-side writes would just double-write it.
 
 ### Phase 8 — dogfood in the bug-bounty fleet 🚧
 - [ ] Wire `armory-mesh` into the bug-bounty `.pi/settings.json` packages.
@@ -163,6 +198,6 @@ signed end-to-end (the hub stores opaque signed payloads it already sees in tran
 | 5 fleet-state primitives | ✅ done (2026-08-10) | smoke5 passed |
 | 6 remote hub + unified transport | ✅ done (2026-08-10) | smoke6 passed; mesh relay + failover deferred to 6.5 |
 | 6.5 mesh relay + hub failover + cross-machine replay | ✅ done (2026-08-11) | smoke6_5 passed (relay + loop-prevention, failover, replay) |
-| 7 hardening pass | 🚧 | — |
+| 7 hardening pass | ✅ done (2026-08-11) | smoke7 passed (size cap, fuzz, rate cap, obs events, materialization) |
 | 8 dogfood in bug-bounty fleet | 🚧 | the graduation gate |
 | 9 publish | 🚧 | — |

@@ -75,3 +75,17 @@ export interface DupCheckResult {
   overlap: boolean;   // whether the peer has a matching finding
   note?: string;      // optional detail (e.g. the matching finding's title/ref)
 }
+
+/**
+ * Phase 7 observability event — flat, queryable, compatible with disler/pi-agent-observability's
+ * hook-event model (source_app + session_id + an event type + event-specific fields as TOP-LEVEL
+ * properties). The extension (or the dogfood fleet) wires `core.onObs` to forward these to the
+ * observability sink (e.g. POST to the swimlane/race UI's collector).
+ */
+export interface ObsEvent {
+  source_app: "armory-mesh";
+  session_id: string;   // this agent's id (the swimlane key)
+  event_type: "mesh_send" | "mesh_receive" | "mesh_relay" | "mesh_replay" | "mesh_evict" | "mesh_drop" | "mesh_claim" | "mesh_release" | "mesh_finding" | "mesh_dup_check" | "mesh_handoff";
+  timestamp: string;    // ISO 8601
+  [field: string]: unknown; // event-specific fields as top-level properties (peer, channel, msgId, hops, reason, ...)
+}

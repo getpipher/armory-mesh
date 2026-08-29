@@ -11,7 +11,7 @@
 
 import { Type } from "@sinclair/typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Peer, MeshMsg, MsgType, Channel, FleetState, DupCheckResult } from "./index.js";
+import type { Peer, MeshMsg, MsgType, Channel, FleetState, DupCheckResult, ObsEvent } from "./index.js";
 import { createAuth, type Auth } from "./auth.js";
 import { createRegistry, type Registry } from "./registry.js";
 import { createLocalTransport, createHubTransport } from "./transport.js";
@@ -20,7 +20,7 @@ import { paths } from "./paths.js";
 import type { MeshConfig } from "./config.js";
 import { DEFAULT_CHANNELS, createChannelRegistry, isDefaultChannel, isValidChannelName, routeTargets, validateType, type ChannelRegistry } from "./channels.js";
 import { appendChannelLog, replayChannelFromTs, readFleetState, appendFleetState, loadCursors, saveCursors } from "./persistence.js";
-import { createFleetStatePrimitives, type FleetStateCtx, type FleetStatePrimitives } from "./fleet-state.js";
+import { createFleetStatePrimitives, materializeReceivedFinding, type FleetStateCtx, type FleetStatePrimitives } from "./fleet-state.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 
@@ -39,6 +39,8 @@ export interface MeshCore {
   snapshotPeers(): Peer[];
   /** Set by the extension to re-render the pool widget when the live peer set changes. */
   onPeersChanged: ((peers: Peer[]) => void) | null;
+  /** Phase 7 observability sink — set by the extension/dogfood to receive ObsEvents (see index.d.ts). */
+  onObs: ((e: ObsEvent) => void) | null;
   /** Join/leave a channel (self subscription; Phase 5 claim_target + tests use this). */
   subscribe(channel: string): void;
   unsubscribe(channel: string): void;
@@ -99,6 +101,7 @@ export async function createMeshCore(opts: {
       self,
       maxMessageBytes: config.maxMessageBytes,
       failoverThreshold: config.hubFailoverThreshold ?? 3,
+      getCursors: () => ({ ...cursors }), // live cursors for reconnect gap back-fill (Phase 7)
     });
     registry = hub as unknown as Registry;
     transport = hub as unknown as Transport;
@@ -113,6 +116,39 @@ export async function createMeshCore(opts: {
   }
   let heartbeatTimer: NodeJS.Timeout | null = null;
   const inbound: MeshMsg[] = [];
+
+  // ── Phase 7: observability + the per-channel send-rate limiter ──────────────
+  let onObs: ((e: ObsEvent) => void) | null = null;
+  /** Emit an ObsEvent to the sink (if wired). Observability must NEVER break the mesh. */
+  function emitObs(event_type: ObsEvent["event_type"], fields: Record<string, unknown> = {}): void {
+    if (!onObs) return;
+    try {
+      onObs({ source_app: "armory-mesh", session_id: self.id, event_type, timestamp: new Date().toISOString(), ...fields });
+    } catch {
+      // a throwing sink must not take the mesh down
+    }
+  }
+  // Token bucket per channel: burst up to channelRatePerSec, refill at channelRatePerSec msg/s.
+  const rateBuckets = new Map(); // channel -> { tokens: number; last: number }
+  function allowChannelSend(channel: string): boolean {
+    // Control-plane exemption: liveness heartbeats must never be throttled (a throttled heartbeat
+    // silently evicts the peer from every pool). Inbound heartbeats are bounded anyway (they update
+    // liveCards in place, they never queue). Data-plane channels are capped normally.
+    if (channel === "#heartbeats") return true;
+    const rate = config.channelRatePerSec;
+    if (!rate || rate <= 0) return true; // disabled (0/negative = no cap)
+    const now = Date.now();
+    const b = (rateBuckets.get(channel) ?? { tokens: rate, last: now }) as { tokens: number; last: number };
+    b.tokens = Math.min(rate, b.tokens + ((now - b.last) / 1000) * rate);
+    b.last = now;
+    if (b.tokens < 1) {
+      rateBuckets.set(channel, b);
+      return false;
+    }
+    b.tokens -= 1;
+    rateBuckets.set(channel, b);
+    return true;
+  }
 
   /** Live peer cards from received heartbeats (the awareness/liveness view for the widget + mesh_list). */
   interface HeartbeatCard {
@@ -189,20 +225,30 @@ export async function createMeshCore(opts: {
     // Phase 6.5: cross-machine late-joiner replay — the hub streams persisted channel history.
     // Each replayed message is verified + deduped + queued exactly like a live message.
     if (frame.kind === "replay" && Array.isArray(frame.msgs)) {
+      let replayed = 0;
       for (const m of frame.msgs) {
         if (!m || m.type === "heartbeat") continue;
-        if (!auth.verify(m)) continue;
+        if (!auth.verify(m)) { emitObs("mesh_drop", { reason: "bad-signature", msgId: m.id, from: m.from, via: "replay" }); continue; }
         if (!markSeen(m.id)) continue;
         inbound.push(m);
+        replayed++;
+        // Phase 7: materialize received findings into the local ledger — HUB MODE ONLY. In local
+        // mode every peer shares one fleet-state.jsonl on this machine (the sender's own write is
+        // already visible); materializing there would just double-write the shared file.
+        if (isHubMode && m.type === "finding") void materializeReceivedFinding(config.project, m.from, m.payload as Record<string, unknown>).catch(() => {});
         if (inbound.length > 4096) inbound.splice(0, inbound.length - 4096);
         if (m.channel && m.ts > (cursors[m.channel] ?? -Infinity)) cursors[m.channel] = m.ts;
       }
+      if (replayed > 0) emitObs("mesh_replay", { channel: frame.channel, count: replayed });
       return;
     }
     if (frame.kind !== "msg" || !frame.msg) return; // Phase 1/2 handle 'msg' only
     const msg = frame.msg;
     // Auth-by-default: verify signature + nonce. A tampered/unsigned/replayed frame is DROPPED.
-    if (!auth.verify(msg)) return;
+    if (!auth.verify(msg)) {
+      emitObs("mesh_drop", { reason: "bad-signature-or-replayed-nonce", msgId: msg.id, from: msg.from, channel: msg.channel });
+      return;
+    }
     // Phase 6.5: mesh relay — a frame in transit (destination is another peer). Deliver or re-relay;
     // never queue (it's not for us). The visited-set + hop-count prevent loops (DESIGN §5.5).
     if (frame.relay && frame.relay.to !== self.id) {
@@ -225,8 +271,16 @@ export async function createMeshCore(opts: {
       return;
     }
     // Phase 4: dedup by msg id (a message may arrive both live and via late-joiner replay).
-    if (!markSeen(msg.id)) return;
+    if (!markSeen(msg.id)) {
+      emitObs("mesh_drop", { reason: "duplicate", msgId: msg.id, from: msg.from, channel: msg.channel });
+      return;
+    }
     inbound.push(msg);
+    emitObs("mesh_receive", { msgId: msg.id, from: msg.from, channel: msg.channel, type: msg.type });
+    // Phase 7: materialize received findings into the local ledger — HUB MODE ONLY (cross-machine
+    // fleet-state: a finding banked on machine Y becomes visible to machine X's mesh_dup_check
+    // overlap check). Local mode shares one ledger file; materializing there would double-write.
+    if (isHubMode && msg.type === "finding") void materializeReceivedFinding(config.project, msg.from, msg.payload as Record<string, unknown>).catch(() => {});
     // Cap the inbound queue so a noisy peer can't OOM us (Phase 7 tightens rate caps).
     if (inbound.length > 4096) inbound.splice(0, inbound.length - 4096);
     // Phase 4: advance this peer's per-channel cursor (the sender already persisted the log).
@@ -262,6 +316,7 @@ export async function createMeshCore(opts: {
       );
     }
     const relayFrame: Frame = { ...frame, relay: { hops: 1, visited: [self.id, target], to: target } };
+    emitObs("mesh_relay", { msgId: (frame.msg as MeshMsg | undefined)?.id, via, to: target, hops: 1, by: "sender" });
     await transport.send(via, relayFrame);
   }
 
@@ -275,12 +330,19 @@ export async function createMeshCore(opts: {
       catch { /* direct failed — re-relay */ }
     }
     // Can't deliver directly — re-relay via a live peer not already visited, unless the hop cap is hit.
-    if (relay.hops >= config.maxHops) return; // hard drop — loop-prevention (DESIGN §5.5)
+    if (relay.hops >= config.maxHops) {
+      emitObs("mesh_drop", { reason: "hop-limit", msgId: (frame.msg as MeshMsg | undefined)?.id, to, hops: relay.hops }); // hard drop — loop-prevention (DESIGN §5.5)
+      return;
+    }
     const visited = new Set(relay.visited);
     visited.add(self.id);
     const via = pickRelayVia(to, visited);
-    if (!via) return; // no relay peer available — drop (no loop, just undeliverable)
+    if (!via) {
+      emitObs("mesh_drop", { reason: "no-relay-peer", msgId: (frame.msg as MeshMsg | undefined)?.id, to, hops: relay.hops }); // no loop, just undeliverable
+      return;
+    }
     const relayFrame: Frame = { ...frame, relay: { hops: relay.hops + 1, visited: [...visited], to } };
+    emitObs("mesh_relay", { msgId: (frame.msg as MeshMsg | undefined)?.id, via, to, hops: relay.hops + 1, by: "relay-peer" });
     try { await transport.send(via, relayFrame); } catch { /* best-effort */ }
   }
 
@@ -342,6 +404,7 @@ export async function createMeshCore(opts: {
         if (now - live.lastSeen > staleAfterMs) {
           liveCards.delete(id);
           changed = true;
+          emitObs("mesh_evict", { peer: id, name: live.card.name, reason: "heartbeat-timeout", lastSeenAgeMs: now - live.lastSeen });
         }
       }
       await refreshCachedPeers().catch(() => {});
@@ -465,6 +528,12 @@ export async function createMeshCore(opts: {
     if (!isValidChannelName(channel)) {
       throw new Error("mesh_send: invalid channel name " + JSON.stringify(channel) + " (must start with '#', no spaces)");
     }
+    // Phase 7: per-channel send-rate cap (token bucket). A noisy peer can't drown the pool
+    // (DESIGN §5.6). Rejected sends are NOT persisted (the durable ledger only holds real sends).
+    if (!allowChannelSend(channel)) {
+      emitObs("mesh_drop", { reason: "rate-limit", channel, type });
+      throw new Error(`mesh_send: rate limit exceeded on ${channel} (max ${config.channelRatePerSec} msg/s) — retry shortly`);
+    }
     // Auto-join the channel we send on (so future heartbeats advertise the subscription).
     myChannels.join(channel);
     const msg: MeshMsg = {
@@ -480,6 +549,13 @@ export async function createMeshCore(opts: {
     };
     msg.sig = auth.sign(msg);
     const frame: Frame = { kind: "msg", msg };
+    // Phase 7: explicit size cap with a clear error (the transport also rejects oversized frames on
+    // the wire — this fails fast + names the limit).
+    const frameBytes = Buffer.byteLength(JSON.stringify(frame), "utf-8");
+    if (frameBytes > config.maxMessageBytes) {
+      emitObs("mesh_drop", { reason: "oversize", channel, type, bytes: frameBytes, cap: config.maxMessageBytes });
+      throw new Error(`mesh_send: message exceeds cap (${frameBytes} > ${config.maxMessageBytes} bytes) — shrink the payload`);
+    }
     // Phase 4: write-through to the channel log on SEND (the sender is the authoritative writer —
     // a finding broadcast with no peer online is still persisted, so a 09:00 session catches up
     // on the 02:00 broadcast). Receivers don't double-persist; replay dedups by id.
@@ -502,6 +578,7 @@ export async function createMeshCore(opts: {
       const targets = routeTargets(channel, livePeers(), self.id);
       await Promise.allSettled(targets.map((id) => transport.send(id, frame)));
     }
+    emitObs("mesh_send", { msgId: msg.id, channel, type, to: args.target, bytes: frameBytes });
     return msg.id;
   }
 
@@ -625,6 +702,12 @@ export async function createMeshCore(opts: {
     },
     set onPeersChanged(v: ((peers: Peer[]) => void) | null) {
       onPeersChanged = v;
+    },
+    get onObs() {
+      return onObs;
+    },
+    set onObs(v: ((e: ObsEvent) => void) | null) {
+      onObs = v;
     },
     send,
     get,

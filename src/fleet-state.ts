@@ -67,6 +67,31 @@ async function hasOverlappingFinding(project: string, target: string | undefined
   return { overlap: false };
 }
 
+/**
+ * Phase 7: materialize a RECEIVED finding into the local ledger (the cross-machine fleet-state
+ * fix). A finding banked by a peer on machine Y arrives here as a channel message (live or hub
+ * replay); materializing it makes the LOCAL `mesh_dup_check` overlap check see it — otherwise the
+ * ledger would only know about this machine's own findings. Dedup by (target, title, session) so
+ * replays + repeated broadcasts don't grow the ledger unbounded. Returns true if appended.
+ */
+export async function materializeReceivedFinding(
+  project: string,
+  from: string,
+  payload: { target?: unknown; severity?: unknown; title?: unknown; ref?: unknown },
+): Promise<boolean> {
+  const target = typeof payload.target === "string" ? payload.target : undefined;
+  const title = typeof payload.title === "string" ? payload.title : undefined;
+  if (!target || !title) return false;
+  const severity = typeof payload.severity === "string" ? payload.severity : "unknown";
+  const ref = typeof payload.ref === "string" ? payload.ref : "";
+  const ledger = await readFleetState(project);
+  const dup = ledger.some((e) => e.kind === "finding" && e.target === target && e.title === title && e.session === from);
+  if (dup) return false;
+  const entry: FleetStateEntry = { kind: "finding", target, session: from, severity, title, ref, ts: Date.now() };
+  await appendFleetState(project, entry).catch(() => {});
+  return true;
+}
+
 function buildSignedMsg(ctx: FleetStateCtx, to: string, type: MsgType, channel: string, payload: unknown): MeshMsg {
   const msg: MeshMsg = { id: crypto.randomUUID(), from: ctx.selfId, to, channel, type, payload, nonce: ctx.nextNonce(), sig: "", ts: Date.now() };
   msg.sig = ctx.sign(msg);
