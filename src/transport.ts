@@ -342,6 +342,9 @@ export interface HubTransportOpts {
 export function createHubTransport(opts: HubTransportOpts): Transport & Registry {
   const { authToken, agentId, self, hubUrls, failoverThreshold } = opts;
   if (!hubUrls || hubUrls.length === 0) throw new Error("hub transport: hubUrls must be non-empty");
+  const trace = (line: string): void => {
+    if (process.env.PI_MESH_DEBUG_TRACE) fs.appendFileSync(process.env.PI_MESH_DEBUG_TRACE, `${Date.now()} ${self.name} ${line}\n`);
+  };
   const headers = { "x-mesh-token": authToken, "content-type": "application/json" };
   let currentHub = 0;
   let consecutiveFailures = 0;
@@ -357,10 +360,21 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
   function currentBase(): string { return hubUrls[currentHub].replace(/\/$/, ""); }
 
   async function post(path: string, body: unknown): Promise<unknown> {
-    try {
-      const r = await fetch(currentBase() + path, { method: "POST", headers, body: JSON.stringify(body) });
-      return await r.json().catch(() => ({}));
-    } catch { return {}; }
+    const payload = JSON.stringify(body);
+    // ONE retry on a transport-level failure: a POST can hit a socket that is mid-teardown
+    // (failover, hub-drained connections, LAN blip) and die before reaching the hub — without the
+    // retry the send silently vanishes (CI-style smoke loops caught exactly this). A retry after
+    // an ambiguous failure is SAFE: receivers dedup by msg id (markSeen), so the mesh stays
+    // effectively exactly-once. Second failure gives up (heartbeat/leave failures are non-fatal).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(currentBase() + path, { method: "POST", headers, body: payload });
+        return await r.json().catch(() => ({}));
+      } catch (err) {
+        if (attempt === 1) return {};
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
   }
 
   function openSSE(): void {
@@ -380,7 +394,7 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
       // On a reconnect (not the initial connect) re-register on this hub — it may have evicted us
       // while the SSE was down, and after a failover we are now on a hub that has never seen us.
       // Phase 7: pass the LIVE cursors so the hub re-replays only the disconnect gap.
-      if (!firstConnect) void post("/join", { agentId, peer: self, cursors: opts.getCursors?.() ?? {} });
+      if (!firstConnect) { trace(`post /join cursors=${JSON.stringify(opts.getCursors?.() ?? {})}`); void post("/join", { agentId, peer: self, cursors: opts.getCursors?.() ?? {} }); }
       firstConnect = false;
       res.on("data", (chunk: string) => {
         buf += chunk;
@@ -399,6 +413,7 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
   }
 
   function scheduleReconnect(): void {
+    trace(`sse close → scheduleReconnect (failures=${consecutiveFailures})`);
     if (reconnectPending) return; // a reconnect is already scheduled — don't double-schedule
     reconnectPending = true;
     consecutiveFailures++;
@@ -415,7 +430,8 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
     if (evt.type === "frame" && evt.frame) { try { frameHandler?.(evt.frame as Frame, "hub"); } catch { /* ignore */ } return; }
     // Phase 6.5: cross-machine late-joiner replay — the hub streams persisted history for a channel.
     if (evt.type === "replay" && Array.isArray(evt.msgs)) {
-      try { frameHandler?.({ kind: "replay", msgs: evt.msgs as MeshMsg[], channel: typeof evt.channel === "string" ? evt.channel : undefined }, "hub"); } catch { /* ignore */ }
+      trace(`sse replay evt ch=${evt.channel} n=${evt.msgs.length}`);
+      try { frameHandler?.({ kind: "replay", msgs: evt.msgs as MeshMsg[], channel: typeof evt.channel === "string" ? evt.channel : undefined }, "hub"); } catch (err) { trace(`replay frameHandler THREW: ${err instanceof Error ? err.stack : String(err)}`); }
       return;
     }
     if (evt.type === "peers" && Array.isArray(evt.peers)) { peerList = (evt.peers as Peer[]).filter((p) => p.id !== agentId); return; }

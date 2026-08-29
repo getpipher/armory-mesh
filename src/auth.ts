@@ -18,6 +18,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import { paths, projectDir } from "./paths.js";
 import type { MeshMsg } from "./index.js";
 
@@ -61,6 +62,10 @@ export interface Auth {
   ensureAllowlisted(agentId: string): Promise<boolean>;
   sign(msg: Pick<MeshMsg, "from" | "channel" | "type" | "nonce" | "payload">): string;
   verify(msg: MeshMsg): boolean;
+  /** Signature-only verification (no nonce window). For idempotent control frames — heartbeats —
+   *  where a replayed frame is harmless (the next real one overwrites it) but advancing the
+   *  receiver's nonce window would permanently poison replay of OLDER stored messages. */
+  verifySignature(msg: MeshMsg): boolean;
   /** Allow the mesh to reuse the project string passed at construction. */
   readonly project: string;
 }
@@ -132,8 +137,19 @@ export function createAuth(opts: { project: string; selfId: string }): Auth {
     const b = Buffer.from(msg.sig ?? "", "utf8");
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false; // bad signature → drop
     // Replay protection: nonce must advance per sender.
-    if (!nonceWindow.accept(msg.from, msg.nonce)) return false;
+    if (!nonceWindow.accept(msg.from, msg.nonce)) {
+      if (process.env.PI_MESH_DEBUG_TRACE) fsSync.appendFileSync(process.env.PI_MESH_DEBUG_TRACE, `${Date.now()} MESH nonce-reject from=${msg.from.slice(0, 8)} nonce=${msg.nonce} last=${(nonceWindow as unknown as { seen: Map<string, number> }).seen.get(msg.from) ?? -1}\n`);
+      return false;
+    }
     return true;
+  }
+
+  function verifySignature(msg: MeshMsg): boolean {
+    if (!key) return false;
+    const expected = sign(msg);
+    const a = Buffer.from(expected, "utf8");
+    const b = Buffer.from(msg.sig ?? "", "utf8");
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
   return {
@@ -141,6 +157,7 @@ export function createAuth(opts: { project: string; selfId: string }): Auth {
     ensureAllowlisted,
     sign,
     verify,
+    verifySignature,
     get project() {
       return project;
     },

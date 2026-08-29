@@ -17,12 +17,17 @@ import { createRegistry, type Registry } from "./registry.js";
 import { createLocalTransport, createHubTransport } from "./transport.js";
 import type { Frame, Transport } from "./types.js";
 import { paths } from "./paths.js";
+import fs from "node:fs";
+
+/** Env-gated file tracing (debug only — zero cost when PI_MESH_DEBUG_TRACE is unset). */
+const trace = (line: string): void => {
+  if (process.env.PI_MESH_DEBUG_TRACE) fs.appendFileSync(process.env.PI_MESH_DEBUG_TRACE, `${Date.now()} MESH ${line}\n`);
+};
 import type { MeshConfig } from "./config.js";
 import { DEFAULT_CHANNELS, createChannelRegistry, isDefaultChannel, isValidChannelName, routeTargets, validateType, type ChannelRegistry } from "./channels.js";
 import { appendChannelLog, replayChannelFromTs, readFleetState, appendFleetState, loadCursors, saveCursors } from "./persistence.js";
 import { createFleetStatePrimitives, materializeReceivedFinding, type FleetStateCtx, type FleetStatePrimitives } from "./fleet-state.js";
 import crypto from "node:crypto";
-import fs from "node:fs";
 
 // ─── MeshCore — the assembled core the tools delegate to ────────────────────
 
@@ -228,7 +233,7 @@ export async function createMeshCore(opts: {
       let replayed = 0;
       for (const m of frame.msgs) {
         if (!m || m.type === "heartbeat") continue;
-        if (!auth.verify(m)) { emitObs("mesh_drop", { reason: "bad-signature", msgId: m.id, from: m.from, via: "replay" }); continue; }
+        if (!auth.verify(m)) { trace(`replay DROP verify-failed id=${m.id.slice(0, 8)} nonce=${m.nonce}`); emitObs("mesh_drop", { reason: "bad-signature-or-replayed-nonce", msgId: m.id, from: m.from, via: "replay" }); continue; }
         if (!markSeen(m.id)) continue;
         inbound.push(m);
         replayed++;
@@ -244,6 +249,22 @@ export async function createMeshCore(opts: {
     }
     if (frame.kind !== "msg" || !frame.msg) return; // Phase 1/2 handle 'msg' only
     const msg = frame.msg;
+    // Heartbeats are idempotent presence frames (Phase 2): signature-only, NO nonce window. A
+    // replayed heartbeat is harmless (the next real one overwrites the card), but letting them
+    // advance the receiver's nonce window permanently poisons replay of OLDER stored messages —
+    // a reconnecting peer could never re-accept the disconnect gap (found by smoke-reconnect:
+    // B's window hit nonce 22 while the stored gap messages carried 12/13 → structural reject).
+    if (msg.type === "heartbeat") {
+      if (!auth.verifySignature(msg)) {
+        emitObs("mesh_drop", { reason: "bad-signature", msgId: msg.id, from: msg.from, channel: msg.channel });
+        return;
+      }
+      const card = msg.payload as HeartbeatCard | undefined;
+      if (card && typeof card.id === "string" && card.id !== self.id) {
+        liveCards.set(card.id, { card, lastSeen: Date.now() });
+      }
+      return;
+    }
     // Auth-by-default: verify signature + nonce. A tampered/unsigned/replayed frame is DROPPED.
     if (!auth.verify(msg)) {
       emitObs("mesh_drop", { reason: "bad-signature-or-replayed-nonce", msgId: msg.id, from: msg.from, channel: msg.channel });
@@ -257,14 +278,6 @@ export async function createMeshCore(opts: {
     }
     // (frame.relay.to === self.id => final delivery: fall through to normal processing; the relay
     // metadata is transport-level + discarded here.)
-    // Heartbeats update the live peer view (liveness + context-usage broadcast) and are NOT queued.
-    if (msg.type === "heartbeat") {
-      const card = msg.payload as HeartbeatCard | undefined;
-      if (card && typeof card.id === "string" && card.id !== self.id) {
-        liveCards.set(card.id, { card, lastSeen: Date.now() });
-      }
-      return;
-    }
     // Phase 5: a dup_check request is auto-answered (overlap check) — NOT queued.
     if (msg.type === "dup_check") {
       void fleet.respondToDupCheck(msg);
