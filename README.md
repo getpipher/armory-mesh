@@ -88,7 +88,7 @@ Slash commands for the human at the keyboard: **`/mesh`** (pool status) and **`/
 - **Same machine:** each session listens on a private **Unix socket** (`~/.pi/mesh/<project>/sockets/<id>.sock`, 0600). Sending = connect → write one length-prefixed JSON frame → ack → close.
 - **Cross-machine:** a small [hub](#cross-machine-the-hub) relays over HTTP + SSE.
 - **Unreachable peer?** Mesh relay: a peer that can reach the destination forwards the frame — with a visited-set + hop-count so loops are impossible.
-- **Persistence:** senders write through to per-channel logs (local: shared `ndjson`; hub: in-memory bounded store) — the durable ledger (`fleet-state.jsonl`) is always written.
+- **Persistence:** senders write through to per-channel logs (local: shared `ndjson`; hub: a disk-backed store under `~/.pi/mesh/` that **survives hub restarts**) — the durable ledger (`fleet-state.jsonl`) is always written.
 
 ### Security (by default, even on localhost)
 
@@ -108,7 +108,7 @@ PI_MESH_AUTH_TOKEN=<secret> PI_MESH_HUB_PORT=7399 npx jiti src/hub.ts
 PI_MESH_HUB_URL=http://<A>:7399 PI_MESH_AUTH_TOKEN=<same-secret> pi
 ```
 
-The hub holds the cross-machine registry, relays messages, and keeps bounded per-channel history for late-joiner replay. Clients **fail over** automatically across `PI_MESH_HUB_URLS` (comma-separated) if the primary dies — and a reconnect back-fills exactly the messages missed while the stream was down (proven by the [reconnect smoke](scripts/smoke-reconnect.ts)). Run the hub on infrastructure you trust; terminate TLS in front of it if it leaves the LAN.
+The hub holds the cross-machine registry, relays messages, and keeps bounded per-channel history for late-joiner replay — **on disk**, so a hub restart no longer wipes the catch-up history (`PI_MESH_STORE_PATH` to relocate, `=off` for memory-only). Clients **fail over** automatically across `PI_MESH_HUB_URLS` (comma-separated) if the primary dies — and a reconnect back-fills exactly the messages missed while the stream was down (proven by the [reconnect smoke](scripts/smoke-reconnect.ts)). Run the hub on infrastructure you trust; terminate TLS in front of it if it leaves the LAN.
 
 ## Project-scoped pools
 
@@ -131,6 +131,7 @@ Precedence: `PI_MESH_PROJECT` env → nearest `.pi/mesh.json` → folder basenam
 | `PI_MESH_AGENT_NAME` | random | Readable name in the widget |
 | `PI_MESH_HUB_URL` / `PI_MESH_HUB_URLS` | — | Hub endpoint(s) — cross-machine mode |
 | `PI_MESH_AUTH_TOKEN` | — | Required for hub mode |
+| `PI_MESH_STORE_PATH` | `~/.pi/mesh/hub-store.ndjson` | Hub replay store (set `off` for memory-only) |
 | `PI_MESH_PING_MS` / `PI_MESH_EVICTION_MISSES` | 2000 / 5 | Heartbeat interval / eviction window |
 | `PI_MESH_MAX_MESSAGE_BYTES` | 262144 | Per-message cap |
 | `PI_MESH_CHANNEL_RATE_PER_SEC` | 10 | Per-channel send-rate cap |

@@ -108,8 +108,8 @@ async function testFailover(): Promise<void> {
   console.log("\nSection 2: hub failover (standby hub + client fail-over)\n");
   rmProj(PROJECT);
   const TOKEN = "hub-test-token";
-  const hub1 = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION });
-  const hub2 = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION });
+  const hub1 = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION, storePath: "off" });
+  const hub2 = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION, storePath: "off" });
   await hub1.start();
   await hub2.start();
   const hub1Url = `http://localhost:${hub1.port}`;
@@ -154,6 +154,7 @@ async function testReplay(): Promise<void> {
   const hub = createHubServer({
     authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION,
     persistChannels: ["#dup-check", "#general", "#handoff", "#learnings"],
+    storePath: "off", // hermetic: this suite tests the replay mechanism, not the disk store
   });
   await hub.start();
   const hubUrl = `http://localhost:${hub.port}`;

@@ -22,8 +22,11 @@
 
 import http from "node:http";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type { Peer, Frame, MeshMsg } from "./index.js";
 import { DEFAULT_CHANNELS, isDefaultChannel } from "./channels.js";
+import { MESH_ROOT } from "./paths.js";
 
 export interface HubServer {
   start(): Promise<void>;
@@ -51,9 +54,14 @@ export interface HubOpts {
   pingMs?: number;
   evictionMisses?: number;
   // Phase 6.5: hub-stored channel logs for cross-machine late-joiner replay. Messages on these
-  // channels are kept in an in-memory bounded buffer + replayed to a joining peer from its cursor.
+  // channels are kept in a bounded buffer + replayed to a joining peer from its cursor.
   persistChannels?: string[];
   maxChannelLogEntries?: number; // per-channel in-memory cap (default 1000; oldest dropped on overflow)
+  // Phase 10: disk-backed store — the buffer is flushed as ndjson so late-joiner replay SURVIVES a
+  // hub restart (in-memory history was wiped on restart). Default <MESH_ROOT>/hub-store.ndjson
+  // (0600); set PI_MESH_STORE_PATH=off (or storePath:"off") to run memory-only.
+  storePath?: string;
+  maxStoreBytes?: number; // file-size trigger for compaction (default 16 MB) — file is rewritten from the live buffers
 }
 
 function safeCompare(a: string, b: string): boolean {
@@ -90,7 +98,63 @@ export function createHubServer(opts: HubOpts): HubServer {
   const maxChannelLogEntries = opts.maxChannelLogEntries ?? 1000;
   const channelLogs = new Map<string, MeshMsg[]>();
 
-  /** Store a persisted-channel message in the in-memory buffer (bounded; drop oldest on overflow). */
+  // ── Phase 10: disk-backed store — the buffer survives hub restarts ──
+  // One ndjson append-only file (one MeshMsg per line, 0600). Loaded on start(); appends are async
+  // fire-and-forget (a full disk must not stall the relay); when the file crosses maxStoreBytes it
+  // is compacted by rewriting the live per-channel buffers (the buffer stays the source of truth).
+  const rawStorePath = opts.storePath ?? process.env.PI_MESH_STORE_PATH;
+  const storeDisabled = rawStorePath === "off" || rawStorePath === "none";
+  const storePath = !storeDisabled && rawStorePath ? rawStorePath : path.join(MESH_ROOT, "hub-store.ndjson");
+  const maxStoreBytes = opts.maxStoreBytes ?? 16 * 1024 * 1024;
+  let storeBytes = 0;
+  let compacting = false;
+
+  /** Hydrate the per-channel buffers from the store file (called once in start(), before listen). */
+  async function loadStore(): Promise<void> {
+    if (storeDisabled) return;
+    let raw: string;
+    try { raw = await fs.promises.readFile(storePath, "utf-8"); } catch { return; } // no file yet — fresh store
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line) as MeshMsg;
+        if (!msg || typeof msg.id !== "string" || typeof msg.channel !== "string" || !persistChannels.includes(msg.channel)) continue;
+        const buf = channelLogs.get(msg.channel) ?? [];
+        buf.push(msg);
+        if (buf.length > maxChannelLogEntries) buf.splice(0, buf.length - maxChannelLogEntries);
+        channelLogs.set(msg.channel, buf);
+      } catch { /* corrupt line — skip (a torn final write must not poison the store) */ }
+    }
+    try { storeBytes = (await fs.promises.stat(storePath)).size; } catch { storeBytes = 0; }
+  }
+
+  function appendStore(msg: MeshMsg): void {
+    if (storeDisabled) return;
+    const line = JSON.stringify(msg) + "\n";
+    storeBytes += Buffer.byteLength(line);
+    fs.promises.appendFile(storePath, line, { mode: 0o600 })
+      .catch((err) => console.error(`hub: store append failed (${(err as Error).message})`))
+      .finally(() => { if (storeBytes > maxStoreBytes && !compacting) void compactStore(); });
+  }
+
+  /** Rewrite the store file from the live per-channel buffers (drops evicted/duplicate history). */
+  async function compactStore(): Promise<void> {
+    compacting = true;
+    try {
+      const lines: string[] = [];
+      for (const buf of channelLogs.values()) for (const m of buf) lines.push(JSON.stringify(m));
+      const body = lines.length > 0 ? lines.join("\n") + "\n" : "";
+      await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.promises.writeFile(storePath, body, { mode: 0o600, encoding: "utf-8" });
+      storeBytes = Buffer.byteLength(body);
+    } catch (err) {
+      console.error(`hub: store compaction failed (${err instanceof Error ? err.message : String(err)})`);
+    } finally {
+      compacting = false;
+    }
+  }
+
+  /** Store a persisted-channel message in the bounded buffer + the disk-backed store. */
   function storeMsg(msg: MeshMsg): void {
     const ch = msg.channel;
     if (!ch || !persistChannels.includes(ch)) return;
@@ -98,10 +162,12 @@ export function createHubServer(opts: HubOpts): HubServer {
     buf.push(msg);
     if (buf.length > maxChannelLogEntries) buf.splice(0, buf.length - maxChannelLogEntries);
     channelLogs.set(ch, buf);
+    appendStore(msg);
   }
 
   /** Flush replayed history to a joining peer over its SSE stream, from its requested cursors. */
   function flushReplay(hp: HubPeer): void {
+    if (process.env.PI_MESH_DEBUG_TRACE) fs.appendFileSync(process.env.PI_MESH_DEBUG_TRACE, `${Date.now()} HUB flushReplay peer=${hp.peer.id.slice(0, 8)} replayed=${hp.replayed} res=${!!hp.res} cursors=${JSON.stringify(hp.cursors ?? null)} stored=${[...channelLogs.entries()].map(([c, b]) => `${c}:${b.length}`).join(",")}\n`);
     if (hp.replayed || !hp.res) return;
     hp.replayed = true;
     const cursors = hp.cursors ?? {};
@@ -202,6 +268,7 @@ export function createHubServer(opts: HubOpts): HubServer {
         if (!body.peer || !body.agentId) { res.writeHead(400); res.end("{}"); return; }
         const hp = peers.get(body.agentId);
         if (hp) { hp.peer = body.peer; hp.lastSeen = Date.now(); hp.cursors = body.cursors; hp.replayed = false; }
+        else if (process.env.PI_MESH_DEBUG_TRACE) fs.appendFileSync(process.env.PI_MESH_DEBUG_TRACE, `${Date.now()} HUB /join UNKNOWN peer=${body.agentId.slice(0, 8)} cursors=${JSON.stringify(body.cursors ?? null)}\n`);
         else peers.set(body.agentId, { peer: body.peer, res: null, lastSeen: Date.now(), cursors: body.cursors });
         broadcast({ type: "peer-joined", peer: body.peer }, body.agentId);
         // Phase 6.5/7: flush cross-machine replay if the SSE stream is already connected (join after
@@ -264,6 +331,7 @@ export function createHubServer(opts: HubOpts): HubServer {
   return {
     get port() { return actualPort; },
     async start() {
+      await loadStore(); // hydrate replay history from disk BEFORE accepting peers
       server = http.createServer(handler);
       await new Promise<void>((resolve) => server!.listen(port, resolve));
       const addr = server!.address();
@@ -293,7 +361,9 @@ async function main(): Promise<void> {
   if (!authToken) { console.error("hub: PI_MESH_AUTH_TOKEN is required"); process.exit(1); }
   const hub = createHubServer({ authToken });
   await hub.start();
+  const storeOff = process.env.PI_MESH_STORE_PATH === "off" || process.env.PI_MESH_STORE_PATH === "none";
   console.log(`armory-mesh hub listening on :${hub.port} (auth-gated)`);
+  console.log(`  replay store: ${storeOff ? "off (memory-only)" : (process.env.PI_MESH_STORE_PATH ?? "~/.pi/mesh/hub-store.ndjson")}`);
   const stop = () => { void hub.stop().then(() => process.exit(0)); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

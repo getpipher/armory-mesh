@@ -130,12 +130,18 @@ signed end-to-end (the hub stores opaque signed payloads it already sees in tran
   the finding VISIBLE cross-machine via `mesh_get({channel:"#dup-check"})`.)
 - ~~Reconnect/failover re-joins with `cursors: {}` (full replay); the `replayed` flag on the hub's
   HubPeer suppresses replay on reconnect-to-same-hub, so a genuine disconnect gap (msgs sent while
-  the SSE was down) is not back-filled.~~ CLOSED in Phase 7: the hub transport re-joins with LIVE
-  cursors (`getCursors`) and the hub's `/join` resets the `replayed` flag, so the disconnect gap is
-  replayed exactly-once (cursor-suppressed + `markSeen`-deduped). Proven by `scripts/smoke-reconnect.ts`
-  (gap back-fill + wi-fi-blip registry resilience; hub `closeConnections()` simulates the drop).
-- Hub channel logs are in-memory only (lost on hub restart); a long-running dogfood may want a
-  disk-backed hub store (Phase 7).
+  the SSE was down) is not back-filled.~~ CLOSED (v0.1.1 plumbing + v0.1.2 fix): the Phase 7
+  plumbing (live cursors on re-join + /join resets `replayed`) was real but STRUCTURALLY DEAD —
+  heartbeat frames share the sender nonce counter, so any peer that witnessed heartbeats had a
+  window past the stored gap messages and `auth.verify` rejected every replayed frame as a replay.
+  Fix (v0.1.2): heartbeats are signature-verified but nonce-EXEMPT (`Auth.verifySignature`) —
+  they're idempotent presence data; real messages keep full replay protection. Proven by
+  `scripts/smoke-reconnect.ts` (gap back-fill exactly-once + wi-fi-blip registry resilience).
+- ~~Hub channel logs are in-memory only (lost on hub restart)~~ CLOSED (Phase 10, v0.1.2): the store
+  is disk-backed ndjson (`~/.pi/mesh/hub-store.ndjson`, 0600, default ON; `PI_MESH_STORE_PATH=off`
+  for memory-only). Hydrated on start(), appended on store, compacted from the live buffers at 16 MB.
+  Proven by smoke-reconnect.ts §3: a finding banked through hub generation 1 is replayed by hub
+  generation 2 (same store file, fresh process).
 
 ### Phase 7 — hardening pass ✅ (2026-08-11)
 **Goal:** enforce the remaining DESIGN §5 guarantees (size + rate caps, observability), fuzz the
@@ -169,8 +175,8 @@ transport, security-review the stack, + close the feasible Phase 6.5 gaps.
 - [x] Phase 6.5 gap (b) — reconnect cursors: the hub transport re-joins with the LIVE cursors
   (`getCursors`) on reconnect, + the hub's `/join` resets the `replayed` flag so the disconnect gap
   is re-flushed (back-fill) instead of silently skipped.
-- [ ] Phase 6.5 gap (c) — hub disk-backed store: DEFERRED to Phase 8 (in-memory is fine for a LAN
-  hub that stays up; the dogfood decides if a restart-durable hub store is worth the complexity).
+- [x] Phase 6.5 gap (c) — hub disk-backed store: DONE (Phase 10, v0.1.2) — see the closed
+  known-limitation above + smoke-reconnect.ts §3 (hub-restart replay survival).
 
 **Phase 7 design:** the rate cap is OUTBOUND-only (the sender-side control; inbound is already
 bounded by the queue cap). Sig verification ordering (before nonce) is load-bearing — a spoofed
@@ -194,7 +200,7 @@ machine, so receiver-side writes would just double-write it.
   works end-to-end in real TUIs.
 - [ ] **The graduation gate itself: the days-long run.** RECTOR runs the parallel hunts over the
   mesh; graduate 🚧→🐾 when it holds for days (no ghost peers, no lost fleet state, dup-check catches
-  real overlap). Hub disk-backed store: build only if the long run hits hub-restart data loss.
+  real overlap). (The hub-restart data-loss trigger no longer applies — the store is disk-backed.)
 
 ### Phase 9 — publish ✅ (2026-08-11, v0.1.0)
 - [x] Repo flipped **public** — master = the full 10-commit build (feat/phase-1-coms-parity merged).

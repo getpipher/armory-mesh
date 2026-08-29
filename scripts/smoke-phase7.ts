@@ -214,7 +214,7 @@ async function testMaterialization(): Promise<void> {
   console.log("\nSection 5: cross-machine fleet-state (hub replay → ledger materialization → dup_check)\n");
   rmProj(PROJECT);
   const TOKEN = "hub-test-token";
-  const hub = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION, persistChannels: ["#dup-check", "#general", "#handoff", "#learnings"] });
+  const hub = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION, persistChannels: ["#dup-check", "#general", "#handoff", "#learnings"], storePath: "off" });
   await hub.start();
   const hubUrl = `http://localhost:${hub.port}`;
 

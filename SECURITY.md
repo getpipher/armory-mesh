@@ -58,10 +58,12 @@ rejected, but nothing distributes the allowlist for you (dogfood may add a `mesh
 
 ## 5. Hub trust model
 
-- The hub is an auth-gated relay + registry + (since 6.5) an **in-memory durable store** for
-  persisted-channel messages. It sees every message payload in transit — and now retains them
-  (bounded, default 1000/channel). Since the hub never holds the project key it cannot forge, but a
-  hub compromise means: read all traffic + stored history, drop/selectively-relay messages, and
+- The hub is an auth-gated relay + registry + (since 6.5) a **durable store** for persisted-channel
+  messages (since Phase 10: disk-backed ndjson, `~/.pi/mesh/hub-store.ndjson`, 0600 — restart-safe;
+  `PI_MESH_STORE_PATH=off` reverts to memory-only). It sees every message payload in transit — and
+  retains them (bounded, default 1000/channel, file compacted at 16 MB). Since the hub never holds
+  the project key it cannot forge, but a hub compromise means: read all traffic + stored history,
+  drop/selectively-relay messages, and
   evict peers (liveness DoS). **Run the hub on infrastructure you trust** (the same trust level as
   the fleet).
 - Hub traffic is **plain HTTP** (no TLS). A LAN sniffer sees payloads. Accepted for the LAN dogfood;
@@ -83,8 +85,13 @@ rejected, but nothing distributes the allowlist for you (dogfood may add a `mesh
 
 1. **Key = identity**: a leaked project key lets a rogue forge as anyone in the pool until rotated.
 2. **Plaintext hub transport** on the LAN (§5) — TLS via reverse proxy when needed.
-3. **In-memory hub history** is lost on hub restart (availability, not confidentiality).
-4. **Ledger materialization dedup** is check-then-append — two same-machine hub peers materializing
+3. **Hub history on the hub's disk** (since Phase 10) — availability now survives restarts, but a
+   hub-host compromise reads stored history too (same exposure as §5; keep the store file 0600).
+4. **Heartbeat frames are signature-verified but nonce-EXEMPT** (v0.1.2): they're idempotent
+   presence data — a captured heartbeat replayed later is harmless (cards are last-write-wins and
+   self-heal within one ping interval). This exemption is what keeps stored-message replay possible
+   at all: heartbeats sharing the nonce window made reconnect gap back-fill structurally impossible.
+5. **Ledger materialization dedup** is check-then-append — two same-machine hub peers materializing
    the same finding concurrently can append it twice (harmless: dup_check is a boolean overlap).
 5. **No per-agent identity / signing** — right-sized for a single-operator fleet; revisit if the
    pool ever spans operators.

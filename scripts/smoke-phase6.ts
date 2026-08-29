@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   fs.rmSync(projectDir, { recursive: true, force: true });
 
   // Start the hub in-process on an ephemeral port.
-  const hub = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION });
+  const hub = createHubServer({ authToken: TOKEN, port: 0, pingMs: PING_MS, evictionMisses: EVICTION, storePath: "off" });
   await hub.start();
   const hubUrl = `http://localhost:${hub.port}`;
   console.log(`  hub on ${hubUrl}`);
