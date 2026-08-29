@@ -176,11 +176,23 @@ frame must not advance the receiver's nonce window (else an attacker could lock 
 burning its nonces). Materialization is hub-mode-only: local mode shares one ledger file per
 machine, so receiver-side writes would just double-write it.
 
-### Phase 8 — dogfood in the bug-bounty fleet 🚧
-- [ ] Wire `armory-mesh` into the bug-bounty `.pi/settings.json` packages.
-- [ ] Add the "Fleet awareness" contract to `bug-bounty/AGENTS.md` (read `mesh_fleet_state` at startup; `mesh_claim_target`; `mesh_dup_check` before banking/submitting; `mesh_bank_finding`/`mesh_handoff` at milestones).
-- [ ] Run the parallel hunts (GMTrade + others) over the mesh; iterate via refining passes.
-- [ ] Graduate 🚧 → 🐾 when the dogfooding passes (the mesh holds for days, no ghost peers, no lost fleet state, the dup-check catches real overlap).
+### Phase 8 — dogfood in the bug-bounty fleet 🚧 (wired + live-verified 2026-08-11)
+- [x] Wire armory-mesh into the bug-bounty fleet: per-hunt `.pi/settings.json` (`~/local-dev/getpipher/armory-mesh`
+  in packages — pi reads project settings from the session cwd ONLY, no ancestor cascade) + bucket-level
+  `.pi/mesh.json` (`project: "bug-bounty-fleet"` + persistChannels — discovered by the extension's new
+  nearest-ancestor walk, so every hunt joins ONE pool automatically).
+- [x] Extension feature (dogfood-driven): `findMeshConfig` — nearest-ancestor `.pi/mesh.json` discovery
+  (precedence: env > mesh.json > cwd basename). Unit-checked + live-verified.
+- [x] "Fleet awareness" contract in `bug-bounty/AGENTS.md`: mesh_fleet_state at startup;
+  mesh_claim_target before hunting; mesh_dup_check before submitting; mesh_bank_finding/mesh_handoff
+  at milestones. Ops notes incl. the per-hunt wiring requirement + the rextor-has-the-same-gap flag.
+- [x] Live verification (two real `pi` sessions in different hunt folders): mutual discovery + the
+  pool widget (live context + claimed-target), claim conflict enforced (second claimant LOST), and
+  cross-hunt `mesh_dup_check` → `overlap: true` from the peer's auto-responder. The killer feature
+  works end-to-end in real TUIs.
+- [ ] **The graduation gate itself: the days-long run.** RECTOR runs the parallel hunts over the
+  mesh; graduate 🚧→🐾 when it holds for days (no ghost peers, no lost fleet state, dup-check catches
+  real overlap). Hub disk-backed store: build only if the long run hits hub-restart data loss.
 
 ### Phase 9 — publish 🚧
 - [ ] Flip the repo to public (`gh repo edit getpipher/armory-mesh --visibility public`).
@@ -199,5 +211,5 @@ machine, so receiver-side writes would just double-write it.
 | 6 remote hub + unified transport | ✅ done (2026-08-10) | smoke6 passed; mesh relay + failover deferred to 6.5 |
 | 6.5 mesh relay + hub failover + cross-machine replay | ✅ done (2026-08-11) | smoke6_5 passed (relay + loop-prevention, failover, replay) |
 | 7 hardening pass | ✅ done (2026-08-11) | smoke7 passed (size cap, fuzz, rate cap, obs events, materialization) |
-| 8 dogfood in bug-bounty fleet | 🚧 | the graduation gate |
+| 8 dogfood in bug-bounty fleet | 🚧 wired + live-verified (2026-08-11) | 2 real sessions: discovery, widget, claim conflict, cross-hunt dup-check overlap — gate: the days-long run |
 | 9 publish | 🚧 | — |

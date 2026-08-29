@@ -17,7 +17,31 @@ import { defaultMeshConfig } from "../src/config.js";
 import { paths } from "../src/paths.js";
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
 import crypto from "node:crypto";
+
+// ─── Phase 8: project-scoped mesh config (.pi/mesh.json) ────────────────────
+/**
+ * Find the nearest-ancestor `.pi/mesh.json` from `dir` (inclusive). Project-scoped fleet config:
+ * a workspace root (e.g. a bug-bounty bucket) drops one file and EVERY session fired in any child
+ * folder joins the same mesh pool — cross-hunt dup-check with zero env vars. Precedence for the
+ * project id: PI_MESH_PROJECT env > mesh.json.project > cwd basename.
+ */
+export function findMeshConfig(dir: string): Record<string, unknown> | null {
+  let cur = dir;
+  for (;;) {
+    const p = path.join(cur, ".pi", "mesh.json");
+    try {
+      const parsed = JSON.parse(fs.readFileSync(p, "utf-8")) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // no mesh.json at this level — keep walking up
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
 
 export default function meshExtension(pi: ExtensionAPI): void {
   // Phase 1: the 4 core tools (coms parity).
@@ -38,9 +62,19 @@ export default function meshExtension(pi: ExtensionAPI): void {
   let core: MeshCore | null = null;
 
   async function startMesh(ctx: ExtensionContext): Promise<void> {
+    // Phase 8: project-scoped fleet config — nearest-ancestor .pi/mesh.json wins for project +
+    // channel policy; explicit env vars still override; cwd basename is the last fallback.
+    const meshFile = findMeshConfig(ctx.cwd) ?? {};
+    const fileProject = typeof meshFile.project === "string" ? meshFile.project : undefined;
+    const filePersist = Array.isArray(meshFile.persistChannels)
+      ? (meshFile.persistChannels as unknown[]).filter((c): c is string => typeof c === "string")
+      : undefined;
     const config = defaultMeshConfig({
-      project: process.env.PI_MESH_PROJECT || path.basename(ctx.cwd) || "default",
+      project: process.env.PI_MESH_PROJECT || fileProject || path.basename(ctx.cwd) || "default",
       agentName: process.env.PI_MESH_AGENT_NAME ?? `agent-${crypto.randomUUID().slice(0, 6)}`,
+      // Only include the key when the file defines it — an explicit undefined in the overrides
+      // spread would CLOBBER the env-derived default (caught by the Phase 2 widget smoke).
+      ...(filePersist ? { persistChannels: filePersist } : {}),
     });
     const agentId = crypto.randomUUID();
     const ctxUsage = ctx.getContextUsage()?.percent;
