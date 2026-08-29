@@ -1,6 +1,6 @@
 {
   "name": "@getpipher/armory-mesh",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Hardened peer-to-peer mesh for pi agents \u2014 live presence, work claims, cross-session duplicate checks, and a durable fleet memory for N parallel sessions. Signed + secured by default.",
   "keywords": [
     "pi-package",
