@@ -61,6 +61,7 @@
     "test:smoke-doctor": "jiti scripts/smoke-doctor.ts"
   },
   "devDependencies": {
+    "@sinclair/typebox": "^0.34.0",
     "jiti": "^2.7.0"
   },
   "peerDependencies": {
