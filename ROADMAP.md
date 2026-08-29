@@ -194,10 +194,16 @@ machine, so receiver-side writes would just double-write it.
   mesh; graduate 🚧→🐾 when it holds for days (no ghost peers, no lost fleet state, dup-check catches
   real overlap). Hub disk-backed store: build only if the long run hits hub-restart data loss.
 
-### Phase 9 — publish 🚧
-- [ ] Flip the repo to public (`gh repo edit getpipher/armory-mesh --visibility public`).
-- [ ] npm-publish `@getpipher/armory-mesh` (account `rz1989`).
-- [ ] README polish + a demo (two sessions, the live pool widget, a `mesh_dup_check` round-trip).
+### Phase 9 — publish ✅ (2026-08-11, v0.1.0)
+- [x] Repo flipped **public** — master = the full 10-commit build (feat/phase-1-coms-parity merged).
+- [x] `@getpipher/armory-mesh@0.1.0` **published to npm** (CI on `v*` tags via the org NPM_TOKEN; the
+  Release workflow gates on the full smoke suite before publishing). First CI run caught a real gap:
+  `@sinclair/typebox` is an optional peer (npm doesn't auto-install those) but a runtime import —
+  added as a devDependency for dev/CI.
+- [x] README rebuilt around the product pitch (30-second demo, pools model, tools, transport +
+  security, hub, doctor, config reference).
+- [ ] Demo asset (two sessions, the live pool widget, a `mesh_dup_check` round-trip) — polish item.
+- [ ] Post-publish housekeeping: delete the merged feature branch, repo description/topics on GitHub.
 
 ## Status per phase
 | Phase | Status | Dogfooded? |
@@ -212,4 +218,4 @@ machine, so receiver-side writes would just double-write it.
 | 6.5 mesh relay + hub failover + cross-machine replay | ✅ done (2026-08-11) | smoke6_5 passed (relay + loop-prevention, failover, replay) |
 | 7 hardening pass | ✅ done (2026-08-11) | smoke7 passed (size cap, fuzz, rate cap, obs events, materialization) |
 | 8 dogfood in bug-bounty fleet | 🚧 wired + live-verified (2026-08-11) | 2 real sessions: discovery, widget, claim conflict, cross-hunt dup-check overlap — gate: the days-long run |
-| 9 publish | 🚧 | — |
+| 9 publish | ✅ v0.1.0 public on npm (2026-08-11) | repo public; demo asset + housekeeping pending |
