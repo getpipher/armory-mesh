@@ -178,7 +178,17 @@ export function createHubServer(opts: HubOpts): HubServer {
         // Seed the new connection with the current peer list.
         sseWrite(res, { type: "peers", peers: [...peers.values()].map((hp) => hp.peer) });
         const hp = peers.get(agentId);
-        if (hp) hp.res = res; else peers.set(agentId, { peer: { id: agentId, name: agentId, model: "", host: "", lastSeen: Date.now(), alive: true }, res, lastSeen: Date.now() });
+        if (hp) hp.res = res;
+        else {
+          // First sight of this peer: seed cursors from the /events query. If /events wins the race
+          // against /join (CI-caught on the v0.1.1 tag: first join, fresh HubPeer had no cursors),
+          // the flushReplay below would run UNFILTERED and a peer with a forward cursor would
+          // receive the full channel history. Existing peers keep their cursors — /join owns them.
+          let cursors: Record<string, number> | undefined;
+          const raw = url.searchParams.get("cursors");
+          if (raw) { try { const p = JSON.parse(raw) as unknown; if (p && typeof p === "object" && !Array.isArray(p)) cursors = p as Record<string, number>; } catch { /* malformed — treat as absent */ } }
+          peers.set(agentId, { peer: { id: agentId, name: agentId, model: "", host: "", lastSeen: Date.now(), alive: true }, res, lastSeen: Date.now(), cursors });
+        }
         // Phase 6.5: flush cross-machine replay history if this peer already /join'd with cursors.
         flushReplay(peers.get(agentId)!);
         req.on("close", () => {

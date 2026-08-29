@@ -365,6 +365,11 @@ export function createHubTransport(opts: HubTransportOpts): Transport & Registry
 
   function openSSE(): void {
     const u = new URL(currentBase() + "/events?agentId=" + encodeURIComponent(agentId));
+    // Carry live cursors on the SSE request itself: if /events is processed before /join (a race
+    // the v0.1.1 CI run caught on first join), the hub seeds the fresh peer with them instead of
+    // replaying the full channel history unfiltered.
+    const cursors = opts.getCursors?.() ?? {};
+    if (Object.keys(cursors).length > 0) u.searchParams.set("cursors", JSON.stringify(cursors));
     const lib = u.protocol === "https:" ? https : http;
     sseClosed = false;
     sseReq = lib.get(u, { headers: { "x-mesh-token": authToken } }, (res: import("node:http").IncomingMessage) => {
