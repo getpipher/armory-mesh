@@ -17,6 +17,9 @@ export interface MeshConfig {
   maxHops: number;            // mesh relay hop limit (loop-prevention)
   persistChannels: string[];  // channels that log to disk (opt-in)
   maxChannelLogBytes: number; // per-channel log rotation threshold
+  // Widget compact mode: max peer rows rendered in the live pool widget before collapsing the
+  // rest into a "… +K more peers" line. Most-recently-seen peers are shown first. Default 10.
+  widgetMaxRows: number;
   // Phase 6.5: peer ids this session CANNOT reach directly (e.g. peers on another machine in a
   // git-synced local-mode registry — their socketPath resolves but the Unix socket is unreachable).
   // `send({target})` skips the direct attempt + relays via a live peer for these. Default: none.
@@ -75,6 +78,7 @@ export const defaultMeshConfig = (overrides: Partial<MeshConfig> = {}): MeshConf
   maxHops: Number(process.env.PI_MESH_MAX_HOPS) || 8,
   persistChannels: (process.env.PI_MESH_PERSIST_CHANNELS ?? "#dup-check,#handoff,#general").split(",").filter(Boolean),
   maxChannelLogBytes: Number(process.env.PI_MESH_MAX_CHANNEL_LOG_BYTES) || 10 * 1024 * 1024,
+  widgetMaxRows: Number(process.env.PI_MESH_WIDGET_MAX_ROWS) || 10,
   unreachablePeers: process.env.PI_MESH_UNREACHABLE_PEERS ? process.env.PI_MESH_UNREACHABLE_PEERS.split(",").filter(Boolean) : undefined,
   hubFailoverThreshold: Number(process.env.PI_MESH_HUB_FAILOVER_THRESHOLD) || 3,
   ...overrides,

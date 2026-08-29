@@ -98,6 +98,38 @@ async function main(): Promise<void> {
   const stubLines = renderMeshPool(80, { fg: (_r: string, t: string) => t }, stubCore);
   check("renderMeshPool handles an empty pool (no throw)", Array.isArray(stubLines) && stubLines.some((l) => l.includes("solo")));
 
+  // ── Compact mode: cap rows + "+K more", most-recently-seen first ──
+  const mkPeers = (n: number): any[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `p${i}`, name: `peer-${String(i).padStart(2, "0")}`, model: "m", host: "h",
+      lastSeen: Date.now() - (n - i) * 1000, alive: true, // peer-14 most recent, peer-00 least
+    }));
+  const themeStub = { fg: (_r: string, t: string) => t };
+
+  // 15 peers, default cap (10): header + 10 rows + 1 overflow line.
+  const capped = renderMeshPool(80, themeStub, { config: { project: "cap" }, snapshotPeers: () => mkPeers(15) } as any);
+  check("compact: 15 peers → 12 lines (header + 10 rows + +K more)", capped.length === 12, `got ${capped.length}`);
+  check("compact: overflow line says '+5 more peers'", capped.some((l) => l.includes("+5 more peers")), JSON.stringify(capped));
+  const mostRecent = mkPeers(15)[14].name; // newest lastSeen
+  const oldest = mkPeers(15)[0].name;
+  check("compact: most-recent peer is shown", capped.some((l) => l.includes(mostRecent)));
+  check("compact: stale peer collapses into the overflow", !capped.some((l) => l.includes(oldest)));
+
+  // Exactly at cap: no overflow line.
+  const atCap = renderMeshPool(80, themeStub, { config: { project: "cap" }, snapshotPeers: () => mkPeers(10) } as any);
+  check("compact: exactly-at-cap shows all rows, no overflow line", atCap.length === 11 && !atCap.some((l) => l.includes("more peers")), `got ${atCap.length}`);
+
+  // Explicit widgetMaxRows=3 overrides the default.
+  const tiny = renderMeshPool(80, themeStub, { config: { project: "cap", widgetMaxRows: 3 }, snapshotPeers: () => mkPeers(15) } as any);
+  check("compact: widgetMaxRows=3 → 5 lines (header + 3 + +12 more)", tiny.length === 5 && tiny.some((l) => l.includes("+12 more peers")), `got ${tiny.length}`);
+
+  // The env knob feeds defaultMeshConfig → config.widgetMaxRows.
+  process.env.PI_MESH_WIDGET_MAX_ROWS = "4";
+  const { defaultMeshConfig } = await import("../src/config.js");
+  const envCfg = defaultMeshConfig();
+  check("compact: PI_MESH_WIDGET_MAX_ROWS=4 lands in config", envCfg.widgetMaxRows === 4, `got ${envCfg.widgetMaxRows}`);
+  delete process.env.PI_MESH_WIDGET_MAX_ROWS;
+
   fs.rmSync(projectDir, { recursive: true, force: true });
   console.log("");
   if (failures === 0) { console.log("✅ Phase 2 widget smoke PASSED"); process.exit(0); }

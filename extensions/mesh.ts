@@ -226,13 +226,20 @@ export function renderMeshPool(width: number, theme: unknown, core: MeshCore): s
   const peers = core.snapshotPeers();
   const header = `mesh ${core.config.project} · ${peers.length} peer${peers.length === 1 ? "" : "s"}`;
   if (peers.length === 0) return [fg("dim", `${header} — solo` )];
+  // Compact mode: most-recently-seen peers first, capped at widgetMaxRows — a 30-peer pool must
+  // not eat the whole editor. The overflow collapses into one "… +K more peers" line.
+  const maxRows = Math.max(1, Number(core.config?.widgetMaxRows) || 10);
+  const sorted = [...peers].sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
+  const shown = sorted.slice(0, maxRows);
   const lines = [fg("accent", header)];
   const now = Date.now();
-  for (const p of peers) {
+  for (const p of shown) {
     const ctxPct = p.contextUsage != null ? `${Math.round(p.contextUsage)}%` : "--";
     const claim = p.claimedTarget ? ` ⟨${p.claimedTarget}⟩` : "";
     const ago = Math.max(0, Math.round((now - (p.lastSeen ?? now)) / 1000));
     lines.push(fg("dim", `  ${p.name}  ${p.model}  ctx:${ctxPct}${claim}  ${ago}s`));
   }
+  const hidden = sorted.length - shown.length;
+  if (hidden > 0) lines.push(fg("dim", `  … +${hidden} more peer${hidden === 1 ? "" : "s"}`));
   return lines;
 }

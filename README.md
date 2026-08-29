@@ -139,6 +139,7 @@ Precedence: `PI_MESH_PROJECT` env → nearest `.pi/mesh.json` → folder basenam
 | `PI_MESH_MAX_MESSAGE_BYTES` | 262144 | Per-message cap |
 | `PI_MESH_CHANNEL_RATE_PER_SEC` | 10 | Per-channel send-rate cap |
 | `PI_MESH_MAX_HOPS` | 8 | Mesh-relay hop limit |
+| `PI_MESH_WIDGET_MAX_ROWS` | 10 | Pool-widget peer rows before collapsing into "… +K more" |
 | `PI_MESH_PERSIST_CHANNELS` | `#dup-check,#handoff,#general` | Channels with durable logs |
 
 ## Why not just use `coms`?
