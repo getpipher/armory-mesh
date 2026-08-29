@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 1160 500" font-family="ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace">
+  <!-- armory-mesh — the 30-second demo, captured from two live sessions in a shared "mesh-demo" pool.
+       Strings are real tool output (claim conflict + dup-check overlap). Styled for GitHub dark mode. -->
+
+  <defs>
+    <g id="term-chrome">
+      <rect width="540" height="460" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+      <line x1="0" y1="32" x2="540" y2="32" stroke="#30363d" stroke-width="1"/>
+      <circle cx="18" cy="16" r="6" fill="#ff5f57"/>
+      <circle cx="38" cy="16" r="6" fill="#febc2e"/>
+      <circle cx="58" cy="16" r="6" fill="#28c840"/>
+    </g>
+    <g id="broadcast">
+      <circle cx="0" cy="0" r="2.5" fill="#58a6ff"/>
+      <path d="M 4 -4 a 5.5 5.5 0 0 1 0 8" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 7 -7 a 10 10 0 0 1 0 14" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round"/>
+    </g>
+    <g id="widget-frame">
+      <rect width="508" height="66" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+    </g>
+  </defs>
+
+  <!-- ═══════════════ Terminal A — hunter-alpha ═══════════════ -->
+  <g transform="translate(20,20)">
+    <use href="#term-chrome"/>
+    <text x="270" y="20" text-anchor="middle" font-size="12" fill="#8b949e">pi — hunter-alpha</text>
+
+    <text x="20" y="60" font-size="13"><tspan fill="#3fb950">$</tspan><tspan fill="#e6edf3">&#160;pi</tspan></text>
+
+    <use href="#broadcast" transform="translate(32,81)"/>
+    <text x="48" y="85" font-size="13"><tspan fill="#58a6ff">mesh:</tspan><tspan fill="#8b949e">&#160;joined "mesh-demo" as hunter-alpha (6096b3eb)</tspan></text>
+
+    <text x="20" y="127" font-size="13"><tspan fill="#3fb950">❯</tspan><tspan fill="#e6edf3">&#160; claim gmtrade + bank the stale-oracle finding</tspan></text>
+
+    <text x="20" y="169" font-size="13"><tspan fill="#bc8cff">●</tspan><tspan fill="#e6edf3">&#160; mesh_claim_target</tspan></text>
+    <text x="36" y="190" font-size="13" fill="#3fb950">claimed "gmtrade"</text>
+
+    <text x="20" y="232" font-size="13"><tspan fill="#bc8cff">●</tspan><tspan fill="#e6edf3">&#160; mesh_bank_finding</tspan></text>
+    <text x="36" y="253" font-size="13" fill="#3fb950">banked: settle() skips stale-oracle price check (HIGH)</text>
+
+    <!-- live pool widget -->
+    <use href="#widget-frame" transform="translate(16,290)"/>
+    <text x="36" y="313" font-size="13" fill="#58a6ff">mesh mesh-demo · 1 peer</text>
+    <text x="36" y="339" font-size="13" fill="#8b949e">  hunter-beta   glm-5.3-flash   ctx:0%   1s</text>
+
+    <text x="270" y="395" text-anchor="middle" font-size="12" fill="#8b949e">claims it first — the claim is broadcast to the pool</text>
+  </g>
+
+  <!-- ═══════════════ Terminal B — hunter-beta ═══════════════ -->
+  <g transform="translate(600,20)">
+    <use href="#term-chrome"/>
+    <text x="270" y="20" text-anchor="middle" font-size="12" fill="#8b949e">pi — hunter-beta</text>
+
+    <text x="20" y="60" font-size="13"><tspan fill="#3fb950">$</tspan><tspan fill="#e6edf3">&#160;pi</tspan></text>
+
+    <use href="#broadcast" transform="translate(32,81)"/>
+    <text x="48" y="85" font-size="13"><tspan fill="#58a6ff">mesh:</tspan><tspan fill="#8b949e">&#160;joined "mesh-demo" as hunter-beta</tspan></text>
+
+    <text x="20" y="127" font-size="13"><tspan fill="#3fb950">❯</tspan><tspan fill="#e6edf3">&#160; claim gmtrade + dup-check the finding</tspan></text>
+
+    <text x="20" y="169" font-size="13"><tspan fill="#bc8cff">●</tspan><tspan fill="#e6edf3">&#160; mesh_claim_target</tspan></text>
+    <text x="36" y="190" font-size="13" fill="#f85149">claim LOST — another session holds "gmtrade"</text>
+
+    <text x="20" y="232" font-size="13"><tspan fill="#bc8cff">●</tspan><tspan fill="#e6edf3">&#160; mesh_dup_check</tspan></text>
+    <text x="36" y="253" font-size="13"><tspan fill="#8b949e">{ "results": [{ "from": "6096b3eb…", </tspan><tspan fill="#3fb950" font-weight="bold">"overlap": true</tspan><tspan fill="#8b949e">,</tspan></text>
+    <text x="48" y="274" font-size="13" fill="#8b949e">"note": "match: settle() skips</text>
+    <text x="48" y="295" font-size="13" fill="#8b949e">stale-oracle price check (HIGH)" }]</text>
+
+    <!-- live pool widget: alpha's claim is visible -->
+    <use href="#widget-frame" transform="translate(16,311)"/>
+    <text x="36" y="334" font-size="13" fill="#58a6ff">mesh mesh-demo · 1 peer</text>
+    <text x="36" y="360" font-size="13"><tspan fill="#8b949e">  hunter-alpha   glm-5.3-flash   ctx:3%&#160;&#160;</tspan><tspan fill="#58a6ff" font-weight="bold">⟨gmtrade⟩</tspan><tspan fill="#8b949e">&#160;&#160;2s</tspan></text>
+
+    <text x="270" y="416" text-anchor="middle" font-size="12" fill="#8b949e">duplicate submission saved — in seconds, mid-hunt</text>
+  </g>
+</svg>

@@ -1,9 +1,23 @@
+<div align="center">
+
 # armory-mesh
 
-> **Your AI agents work in parallel. Now they can work *together*.**
-> A hardened peer-to-peer mesh for [pi](https://github.com/earendil-works/pi-coding-agent) coding-agent sessions — live presence, work claims, cross-session duplicate checks, and a durable fleet memory. Signed and secured by default.
+**Your AI agents work in parallel. Now they can work *together*.**
 
-`@getpipher/armory-mesh` is a pi extension that lets N parallel pi sessions talk to each other **peer-to-peer** — equal agents, no orchestrator — across folders on one machine, or across machines over a hub.
+A hardened peer-to-peer mesh for [pi](https://github.com/earendil-works/pi-coding-agent) coding-agent sessions —
+live presence, atomic work claims, cross-session duplicate checks, and a durable fleet memory.
+**Signed and secured by default.**
+
+[![npm](https://img.shields.io/npm/v/@getpipher/armory-mesh?style=flat-square&color=3fb950)](https://www.npmjs.com/package/@getpipher/armory-mesh)
+[![CI](https://github.com/getpipher/armory-mesh/actions/workflows/release.yml/badge.svg?style=flat-square)](https://github.com/getpipher/armory-mesh/actions/workflows/release.yml)
+[![tests](https://img.shields.io/badge/smoke_suites-12%20%2F%2012-3fb950?style=flat-square)](#)
+[![License: MIT](https://img.shields.io/badge/license-MIT-8b949e?style=flat-square)](LICENSE)
+
+<img src="https://raw.githubusercontent.com/getpipher/armory-mesh/master/assets/demo.svg" alt="Two pi sessions in a shared pool: hunter-alpha claims gmtrade and banks a finding; hunter-beta's claim is rejected and its dup-check comes back with an instant overlap match." width="100%">
+
+*Real output from two live sessions in a shared pool. Zero config on one machine; one small hub process for cross-machine.*
+
+</div>
 
 ---
 
@@ -11,17 +25,14 @@
 
 Every pi session is an isolated process. Run three in parallel — three bug-bounty hunts, three features, three refactors — and they're **strangers**: they duplicate each other's work, forget what the others learned, and die with their knowledge.
 
-## The 30-second demo
+armory-mesh gives them a shared nervous system:
 
-Open two terminals in two project folders that share a mesh pool.
+- **Presence** — each session sees the fleet live: who's running, on what model, how much context is left, what they're claiming. A session that dies is evicted automatically — no ghosts.
+- **Claims** — atomic work claims (`mesh_claim_target`) so two sessions never hunt the same target. A losing claimant is told *no, and who holds it*.
+- **Duplicate checks** — `mesh_dup_check` sweeps the pool: *"has anyone seen this bug?"* Every peer answers from its ledger in seconds. An overlap reply is a duplicate submission saved.
+- **Durable memory** — findings banked at 02:00 with nobody online are replayed to whoever joins at 09:00. The fleet-state ledger (`fleet-state.jsonl`) survives every session.
 
-- **Session A** claims a target and banks a finding.
-- **Session B** (started later) tries to claim the same target → *"taken — held by session A."*
-- B then asks the pool: *"has anyone seen this bug?"* → A answers instantly: **"yes — I banked that exact finding."**
-
-Zero config on one machine. One small hub process for cross-machine.
-
-## Install
+## Quickstart
 
 ```bash
 # in the project where your sessions run
@@ -29,27 +40,23 @@ pi install @getpipher/armory-mesh        # npm package, or
 pi install ~/path/to/armory-mesh         # a local checkout
 ```
 
-Then fire your sessions. On startup each one prints:
+Then fire your sessions. Each one prints the join line and grows a **live fleet widget** below the editor:
 
 ```
 📡 mesh: joined "my-project" as agent-2cc1e9
 ```
-
-… and shows a **live fleet widget** below the editor:
 
 ```
 mesh bug-bounty-fleet · 6 peers
   gmtrade-audit   glm-5.3-flash  ctx:34%  ⟨gmtrade⟩  1s
   veilo-recon     glm-5.3-flash  ctx:10%             1s
   hunter-3        glm-5.3-flash  ctx:67%             0s
-  ...
+  … +3 more peers
 ```
 
-Presence updates every 2 seconds (name, model, live context-window usage, claimed target). A session that dies is evicted automatically — no ghosts.
+Presence updates every 2 seconds (name, model, live context-window usage, claimed target, last-seen). The widget collapses past `PI_MESH_WIDGET_MAX_ROWS` (default 10), most-recently-active first.
 
-### Pools (who can see whom)
-
-A session joins the pool named by — in order of precedence — the `PI_MESH_PROJECT` env var, a [`.pi/mesh.json`](#project-scoped-pools) anywhere up its folder tree, or its working folder's basename. **Same pool = visible to each other. Different pool = complete strangers.** Knowledge itself only moves when a session calls a tool — presence metadata (heartbeats) is the only automatic traffic.
+**Who can see whom:** a session joins the pool named by — in order of precedence — the `PI_MESH_PROJECT` env var, a [`.pi/mesh.json`](#project-scoped-pools) anywhere up its folder tree, or its working folder's basename. **Same pool = visible to each other. Different pool = complete strangers.** Knowledge itself only moves when a session calls a tool — presence metadata (heartbeats) is the only automatic traffic.
 
 ## The tools (injected into every session)
 
@@ -58,7 +65,7 @@ A session joins the pool named by — in order of precedence — the `PI_MESH_PR
 | `mesh_list` | Live peers: name, model, host, context usage, claimed target, last-seen |
 | `mesh_send` | Send a typed message to a peer or a channel |
 | `mesh_get` / `mesh_await` | Pull (fire-and-forget) or block for matching messages |
-| `mesh_claim_target` / `mesh_release_target` | **Atomic** work claims (filesystem-lock) — prevents two sessions doing the same job. Stale claims from dead sessions are auto-reclaimable |
+| `mesh_claim_target` / `mesh_release_target` | **Atomic** work claims (filesystem-lock) — stale claims from dead sessions are auto-reclaimable |
 | `mesh_bank_finding` | Announce + **permanently persist** a finding |
 | `mesh_dup_check` | "Has anyone seen this?" — every peer answers from its ledger in seconds |
 | `mesh_handoff` | Publish a resume pointer for the next session |
@@ -74,20 +81,9 @@ Slash commands for the human at the keyboard: **`/mesh`** (pool status) and **`/
 3. **Check before you submit** — `mesh_dup_check(...)` sweeps the fleet. An overlap reply is a duplicate submission saved.
 4. **Handoff on exit** — `mesh_handoff(...)` so the next session resumes instead of restarting.
 
-A finding banked at 02:00 with nobody online is replayed to whoever joins at 09:00 — the durable ledger is the point.
-
 ## How it works
 
-```
-session A (mailbox: sockets/A.sock)     session B (mailbox: sockets/B.sock)
-        │                                        │
-        │ ① signed HEARTBEAT every 2s            │
-        │   (liveness, ctx %, claims, channels)  │
-        ├─────────→ to every known peer ─────────┤     → fills the widget
-        │                                        │
-        │ ② tool calls only (mesh_send, …):      │
-        ├───── one signed frame per recipient ──→│  B verifies signature → queues
-```
+<img src="https://raw.githubusercontent.com/getpipher/armory-mesh/master/assets/architecture.svg" alt="Machine 1: three sessions on Unix sockets, peer-to-peer signed frames, durable fleet-state ledger; machine 2: two hub-mode sessions; hub in the middle relaying over HTTP+SSE without ever seeing the project key." width="100%">
 
 - **Same machine:** each session listens on a private **Unix socket** (`~/.pi/mesh/<project>/sockets/<id>.sock`, 0600). Sending = connect → write one length-prefixed JSON frame → ack → close.
 - **Cross-machine:** a small [hub](#cross-machine-the-hub) relays over HTTP + SSE.
@@ -112,7 +108,7 @@ PI_MESH_AUTH_TOKEN=<secret> PI_MESH_HUB_PORT=7399 npx jiti src/hub.ts
 PI_MESH_HUB_URL=http://<A>:7399 PI_MESH_AUTH_TOKEN=<same-secret> pi
 ```
 
-The hub holds the cross-machine registry, relays messages, and keeps bounded per-channel history for late-joiner replay. Clients **fail over** automatically across `PI_MESH_HUB_URLS` (comma-separated) if the primary dies. Run the hub on infrastructure you trust; terminate TLS in front of it if it leaves the LAN.
+The hub holds the cross-machine registry, relays messages, and keeps bounded per-channel history for late-joiner replay. Clients **fail over** automatically across `PI_MESH_HUB_URLS` (comma-separated) if the primary dies — and a reconnect back-fills exactly the messages missed while the stream was down (proven by the [reconnect smoke](scripts/smoke-reconnect.ts)). Run the hub on infrastructure you trust; terminate TLS in front of it if it leaves the LAN.
 
 ## Project-scoped pools
 
@@ -144,11 +140,25 @@ Precedence: `PI_MESH_PROJECT` env → nearest `.pi/mesh.json` → folder basenam
 
 ## Why not just use `coms`?
 
-[`coms`](https://github.com/disler/pi-vs-claude-code) (disler) pioneered peer-to-peer pi messaging — armory-mesh is the hardened evolution: auth + signed messages + replay protection by default (even local), liveness + auto-eviction (no ghost peers), typed messages + subscription-scoped channels, durable send-through persistence with late-joiner replay, fleet-state primitives baked in (claim / bank / dup-check / handoff), mesh relay with loop prevention, hub failover, and per-message + per-channel flood caps. `coms` is a great chat wire; armory-mesh is a fleet operating layer.
+[`coms`](https://github.com/disler/pi-vs-claude-code) (disler) pioneered peer-to-peer pi messaging — armory-mesh is the hardened evolution.
+
+|  | `coms` | armory-mesh |
+|---|---|---|
+| Pool size | N peers | N peers (bounded relay + caps) |
+| Auth | — | **project key + HMAC-signed frames, even on localhost** |
+| Replay protection | — | **monotonic nonces, timing-safe verify** |
+| Liveness | keepalive pings | signed heartbeat gossip + **auto-eviction (no ghosts)** |
+| Messages | text lines | **typed messages + subscription-scoped channels** |
+| Persistence | — | **send-through logs + late-joiner replay + durable fleet ledger** |
+| Fleet primitives | — | **claim / bank / dup-check / handoff, built in** |
+| Cross-machine | separate codepath | **unified transport: sockets ↔ hub, with failover + relay** |
+| Abuse limits | line cap | **256 KB per-message + 10 msg/s per-channel caps + mesh relay loop prevention** |
+
+`coms` is a great chat wire; armory-mesh is a fleet operating layer.
 
 ## Status
 
-🚧 **Dogfooding** — built and hardened through 8 phases of smoke-tested development (transport, liveness, channels, persistence, fleet-state, hub, relay/failover/replay, hardening), currently running in a live multi-session security-hunting fleet. API may still shift before 1.0.
+🚀 **v0.1.x** — built and hardened through 12 smoke-tested suites (transport, liveness, channels, persistence, fleet-state, hub, relay/failover/replay, hardening, wiring, diagnostics, reconnect), running in a live multi-session security-hunting fleet. API may still shift before 1.0.
 
 - [DESIGN.md](DESIGN.md) — architecture + the hardened guarantees
 - [ROADMAP.md](ROADMAP.md) — build phases

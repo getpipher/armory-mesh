@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 1160 520" font-family="ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace">
+  <!-- armory-mesh — topology: peer-to-peer Unix-socket mesh on a machine, hub relay across machines. -->
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+    <g id="session-node">
+      <rect width="390" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+      <circle cx="24" cy="26" r="4" fill="#3fb950"/>
+    </g>
+    <g id="session-node-s">
+      <rect width="270" height="52" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+      <circle cx="24" cy="26" r="4" fill="#3fb950"/>
+    </g>
+  </defs>
+
+  <text x="580" y="34" text-anchor="middle" font-size="14" fill="#8b949e">peer-to-peer sockets on a machine — hub relay across machines</text>
+
+  <!-- ══════════ machine 1 ══════════ -->
+  <g transform="translate(30,70)">
+    <rect width="470" height="330" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="20" y="30" font-size="13" fill="#e6edf3" font-weight="bold">machine 1</text>
+
+    <use href="#session-node" transform="translate(20,50)"/>
+    <text x="44" y="72" font-size="13" fill="#e6edf3">session — hunter-alpha  <tspan fill="#58a6ff">⟨gmtrade⟩</tspan></text>
+    <text x="44" y="90" font-size="11" fill="#8b949e">~/.pi/mesh/&lt;project&gt;/sockets/a.sock · 0600</text>
+
+    <use href="#session-node" transform="translate(20,126)"/>
+    <text x="44" y="148" font-size="13" fill="#e6edf3">session — hunter-beta</text>
+    <text x="44" y="166" font-size="11" fill="#8b949e">~/.pi/mesh/&lt;project&gt;/sockets/b.sock · 0600</text>
+
+    <use href="#session-node" transform="translate(20,202)"/>
+    <text x="44" y="224" font-size="13" fill="#e6edf3">session — hunter-gamma</text>
+    <text x="44" y="242" font-size="11" fill="#8b949e">~/.pi/mesh/&lt;project&gt;/sockets/c.sock · 0600</text>
+
+    <!-- peer-to-peer links -->
+    <line x1="430" y1="76" x2="430" y2="152" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arr)" marker-start="url(#arr)"/>
+    <line x1="430" y1="152" x2="430" y2="228" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#arr)" marker-start="url(#arr)"/>
+    <text x="418" y="118" text-anchor="end" font-size="10" fill="#8b949e">signed frames</text>
+    <text x="418" y="194" text-anchor="end" font-size="10" fill="#8b949e">mesh relay</text>
+
+    <text x="235" y="285" text-anchor="middle" font-size="11" fill="#8b949e">equal peers — no orchestrator · one connect-write-ack-close per send</text>
+    <text x="235" y="308" text-anchor="middle" font-size="11"><tspan fill="#8b949e">durable ledger: </tspan><tspan fill="#3fb950">fleet-state.jsonl</tspan><tspan fill="#8b949e"> — claims · findings · handoffs</tspan></text>
+  </g>
+
+  <!-- ══════════ hub ══════════ -->
+  <g transform="translate(545,70)">
+    <rect width="230" height="330" rx="12" fill="#161b22" stroke="#1f6feb" stroke-width="1.2"/>
+    <text x="115" y="34" text-anchor="middle" font-size="13" fill="#58a6ff" font-weight="bold">hub</text>
+    <text x="115" y="52" text-anchor="middle" font-size="11" fill="#8b949e">one small process · no deps</text>
+
+    <text x="24" y="92" font-size="12" fill="#c9d1d9">· HTTP + SSE relay</text>
+    <text x="24" y="120" font-size="12" fill="#c9d1d9">· live registry + eviction</text>
+    <text x="24" y="148" font-size="12" fill="#c9d1d9">· bounded channel logs</text>
+    <text x="44" y="166" font-size="11" fill="#8b949e">(late-joiner replay)</text>
+    <text x="24" y="194" font-size="12" fill="#c9d1d9">· token-gated LAN entry</text>
+
+    <line x1="24" y1="214" x2="206" y2="214" stroke="#30363d" stroke-width="1"/>
+    <text x="115" y="240" text-anchor="middle" font-size="11" fill="#3fb950">never sees the project key</text>
+    <text x="115" y="260" text-anchor="middle" font-size="11" fill="#3fb950">messages stay end-to-end signed</text>
+    <text x="115" y="286" text-anchor="middle" font-size="11" fill="#8b949e">failover across hubUrls</text>
+  </g>
+
+  <!-- ══════════ machine 2 ══════════ -->
+  <g transform="translate(820,70)">
+    <rect width="310" height="330" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="20" y="30" font-size="13" fill="#e6edf3" font-weight="bold">machine 2</text>
+
+    <use href="#session-node-s" transform="translate(20,50)"/>
+    <text x="44" y="72" font-size="13" fill="#e6edf3">session — scout-delta</text>
+    <text x="44" y="90" font-size="11" fill="#8b949e">hub mode · SSE stream</text>
+
+    <use href="#session-node-s" transform="translate(20,126)"/>
+    <text x="44" y="148" font-size="13" fill="#e6edf3">session — scout-echo  <tspan fill="#58a6ff">⟨veilo⟩</tspan></text>
+    <text x="44" y="166" font-size="11" fill="#8b949e">hub mode · SSE stream</text>
+
+    <text x="155" y="200" text-anchor="middle" font-size="11" fill="#8b949e">same guarantees,</text>
+    <text x="155" y="218" text-anchor="middle" font-size="11" fill="#8b949e">same pool — one shared project key</text>
+  </g>
+
+  <!-- ══════════ arrows between boxes ══════════ -->
+  <line x1="502" y1="200" x2="543" y2="200" stroke="#8b949e" stroke-width="1.4" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <text x="522" y="186" text-anchor="middle" font-size="10" fill="#8b949e">LAN</text>
+  <line x1="777" y1="200" x2="818" y2="200" stroke="#8b949e" stroke-width="1.4" marker-end="url(#arr)" marker-start="url(#arr)"/>
+  <text x="798" y="186" text-anchor="middle" font-size="10" fill="#8b949e">WAN</text>
+
+  <!-- ══════════ legend ══════════ -->
+  <g transform="translate(30,430)" font-size="11" fill="#8b949e">
+    <rect width="260" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
+    <circle cx="22" cy="17" r="4" fill="#3fb950"/>
+    <text x="36" y="21">HMAC-SHA256 signed — by default</text>
+
+    <rect x="276" width="260" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
+    <circle cx="298" cy="17" r="4" fill="#58a6ff"/>
+    <text x="312" y="21">monotonic nonces — no replay</text>
+
+    <rect x="552" width="260" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
+    <circle cx="574" cy="17" r="4" fill="#bc8cff"/>
+    <text x="588" y="21">size + rate caps — no floods</text>
+
+    <rect x="828" width="272" height="34" rx="17" fill="#161b22" stroke="#30363d"/>
+    <circle cx="850" cy="17" r="4" fill="#f85149"/>
+    <text x="864" y="21">heartbeat eviction — no ghosts</text>
+  </g>
+</svg>
