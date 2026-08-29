@@ -29,6 +29,10 @@ export interface HubServer {
   start(): Promise<void>;
   stop(): Promise<void>;
   port: number; // the actual bound port (after start)
+  /** Destroy every open client connection (SSE streams + in-flight POSTs) without stopping the
+   *  hub. Clients see the streams drop + reconnect with their live cursors — the simulated
+   *  network-partition for reconnect/gap tests, and an ops lever for draining connections. */
+  closeConnections(): void;
 }
 
 interface HubPeer {
@@ -264,6 +268,11 @@ export function createHubServer(opts: HubOpts): HubServer {
       channelLogs.clear();
       if (server) await new Promise<void>((r) => server!.close(() => r()));
       server = null;
+    },
+    closeConnections() {
+      // http.Server#closeAllConnections destroys the underlying sockets; SSE `close` events fire
+      // on both sides (hub drops hp.res, clients schedule reconnect). The hub itself stays up.
+      server?.closeAllConnections();
     },
   };
 }

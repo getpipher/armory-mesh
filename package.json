@@ -46,7 +46,7 @@
     ]
   },
   "scripts": {
-    "test": "npm run test:smoke && npm run test:smoke2 && npm run test:smoke2-widget && npm run test:smoke3 && npm run test:smoke4 && npm run test:smoke5 && npm run test:smoke6 && npm run test:smoke6_5 && npm run test:smoke7 && npm run test:smoke8 && npm run test:smoke-doctor",
+    "test": "npm run test:smoke && npm run test:smoke2 && npm run test:smoke2-widget && npm run test:smoke3 && npm run test:smoke4 && npm run test:smoke5 && npm run test:smoke6 && npm run test:smoke6_5 && npm run test:smoke7 && npm run test:smoke8 && npm run test:smoke-doctor && npm run test:smoke-reconnect",
     "test:smoke": "jiti scripts/smoke-phase1.ts",
     "test:smoke2": "jiti scripts/smoke-phase2.ts",
     "test:smoke2-widget": "jiti scripts/smoke-phase2-widget.ts",
@@ -58,7 +58,8 @@
     "test:smoke6_5": "jiti scripts/smoke-phase6_5.ts",
     "test:smoke7": "jiti scripts/smoke-phase7.ts",
     "test:smoke8": "jiti scripts/smoke-phase8.ts",
-    "test:smoke-doctor": "jiti scripts/smoke-doctor.ts"
+    "test:smoke-doctor": "jiti scripts/smoke-doctor.ts",
+    "test:smoke-reconnect": "jiti scripts/smoke-reconnect.ts"
   },
   "devDependencies": {
     "@sinclair/typebox": "^0.34.0",

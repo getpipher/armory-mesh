@@ -128,10 +128,12 @@ signed end-to-end (the hub stores opaque signed payloads it already sees in tran
   received + materialized it. Fix options for Phase 7/8: materialize received `finding` msgs into the
   local ledger, OR have the hub store fleet-state too. (The channel broadcast + replay already make
   the finding VISIBLE cross-machine via `mesh_get({channel:"#dup-check"})`.)
-- Reconnect/failover re-joins with `cursors: {}` (full replay); the `replayed` flag on the hub's HubPeer
-  suppresses replay on reconnect-to-same-hub, so a genuine disconnect gap (msgs sent while the SSE
-  was down) is not back-filled except on failover to a fresh hub. Phase 7 could pass live cursors on
-  reconnect + reset the `replayed` flag.
+- ~~Reconnect/failover re-joins with `cursors: {}` (full replay); the `replayed` flag on the hub's
+  HubPeer suppresses replay on reconnect-to-same-hub, so a genuine disconnect gap (msgs sent while
+  the SSE was down) is not back-filled.~~ CLOSED in Phase 7: the hub transport re-joins with LIVE
+  cursors (`getCursors`) and the hub's `/join` resets the `replayed` flag, so the disconnect gap is
+  replayed exactly-once (cursor-suppressed + `markSeen`-deduped). Proven by `scripts/smoke-reconnect.ts`
+  (gap back-fill + wi-fi-blip registry resilience; hub `closeConnections()` simulates the drop).
 - Hub channel logs are in-memory only (lost on hub restart); a long-running dogfood may want a
   disk-backed hub store (Phase 7).
 
