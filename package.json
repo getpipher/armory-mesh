@@ -1,7 +1,7 @@
 {
   "name": "@getpipher/armory-mesh",
-  "version": "0.0.0-scaffold",
-  "description": "Hardened peer-to-peer mesh for pi agents — the in-house answer to disler's coms. N-peer mesh with unified transport, liveness + auto-eviction, built-in auth, typed messages + channels, optional persistence + late-joiner replay, and fleet-state primitives (claim_target / bank_finding / dup_check / handoff). Loaded as a pi extension.",
+  "version": "0.1.0",
+  "description": "Hardened peer-to-peer mesh for pi agents \u2014 live presence, work claims, cross-session duplicate checks, and a durable fleet memory for N parallel sessions. Signed + secured by default.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -46,7 +46,7 @@
     ]
   },
   "scripts": {
-    "test": "pnpm test:smoke && pnpm test:smoke2 && pnpm test:smoke2-widget && pnpm test:smoke3 && pnpm test:smoke4 && pnpm test:smoke5 && pnpm test:smoke6 && pnpm test:smoke6_5 && pnpm test:smoke7 && pnpm test:smoke8 && pnpm test:smoke-doctor",
+    "test": "npm run test:smoke && npm run test:smoke2 && npm run test:smoke2-widget && npm run test:smoke3 && npm run test:smoke4 && npm run test:smoke5 && npm run test:smoke6 && npm run test:smoke6_5 && npm run test:smoke7 && npm run test:smoke8 && npm run test:smoke-doctor",
     "test:smoke": "jiti scripts/smoke-phase1.ts",
     "test:smoke2": "jiti scripts/smoke-phase2.ts",
     "test:smoke2-widget": "jiti scripts/smoke-phase2-widget.ts",
