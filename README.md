@@ -35,10 +35,18 @@ armory-mesh gives them a shared nervous system:
 ## Quickstart
 
 ```bash
-# in the project where your sessions run
-pi install @getpipher/armory-mesh        # npm package, or
-pi install ~/path/to/armory-mesh         # a local checkout
+# user scope — available in every project, no trust prompt
+pi install npm:@getpipher/armory-mesh
+
+# or project scope — lives in .pi/settings.json, shared with the repo;
+# pi auto-installs it on next start once you trust the project
+pi install -l npm:@getpipher/armory-mesh
+
+# a local checkout works too
+pi install /path/to/armory-mesh
 ```
+
+> The `npm:` prefix is required — a bare package name parses as a local path and fails.
 
 Then fire your sessions. Each one prints the join line and grows a **live fleet widget** below the editor:
 
